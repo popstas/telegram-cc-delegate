@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
@@ -230,5 +231,32 @@ describe('channel main', () => {
     writeFileSync(join(dir, 'api-token'), 'tok\n')
     const r = await run({ TD_SESSION_ID: SID, TD_TOKEN_FILE: join(dir, 'api-token'), TD_ROUTER_URL: 'http://127.0.0.1:1' }, true)
     expect(r.code).toBe(0)
+  })
+
+  it('main.ts over stdio delivers a router event as channel notification and exits 0 on close', async () => {
+    const fake = await new FakeRouter().start()
+    cleanups.push(() => fake.stop())
+    const dir = mkdtempSync(join(tmpdir(), 'td-ch-'))
+    writeFileSync(join(dir, 'api-token'), `${TOKEN}\n`)
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ['src/channel/main.ts'],
+      env: { PATH: process.env.PATH ?? '', HOME: dir, TD_SESSION_ID: SID, TD_TOKEN_FILE: join(dir, 'api-token'), TD_ROUTER_URL: `http://127.0.0.1:${fake.port}` },
+      stderr: 'pipe',
+    })
+    const client = new Client({ name: 'stdio-test', version: '0' })
+    const got: Array<{ content: string; meta: Record<string, string> }> = []
+    client.setNotificationHandler(channelNote, n => { got.push(n.params) })
+    await client.connect(transport)
+    const pid = transport.pid!
+    expect(client.getServerCapabilities()?.experimental).toEqual({ 'claude/channel': {}, 'claude/channel/permission': {} })
+    await until(() => fake.sse.length === 1, 5000)
+    expect(fake.requests[0]!.auth).toBe(`Bearer ${TOKEN}`)
+    fake.push({ type: 'message', content: 'по stdio', meta: { user_id: '42', kind: 'guest' } })
+    await until(() => got.length === 1, 5000)
+    expect(got[0]).toEqual({ content: 'по stdio', meta: { user_id: '42', kind: 'guest' } })
+    await client.close()
+    // StdioClientTransport closes stdin first; the server must exit by itself.
+    await until(() => { try { process.kill(pid, 0); return false } catch { return true } }, 5000)
   })
 })
