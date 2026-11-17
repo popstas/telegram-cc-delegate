@@ -54,7 +54,7 @@ journalctl --user -u telegram-delegate -n 20   # "polling as @<бот>"
 | `POST /routes` | `{ sessionId, sessionName, headId, tgUsername?, tgUserId? }` -> 201 `{ route, moved? }` |
 | `DELETE /routes/:sessionId` | маршрут -> `closed` |
 | `GET /sessions/:id/events` | SSE для канал-сервера; подключение делает маршрут `active` |
-| `POST /sessions/:id/reply` | `{ text, files?, reply_to? }` -> `{ message_ids }`; 409 пока гость не писал боту |
+| `POST /sessions/:id/reply` | `{ text, files?, reply_to?, buttons? }` -> `{ message_ids }`; 409 пока гость не писал боту; buttons до 8 x 64 символа, нужен text |
 | `POST /sessions/:id/edit` | `{ message_id, text }` |
 | `POST /sessions/:id/permission` | `{ request_id, tool_name, description, input_preview }` -> кнопки гостю |
 
@@ -70,4 +70,4 @@ journalctl --user -u telegram-delegate -n 20   # "polling as @<бот>"
 | `TD_ROUTER_URL` | `http://127.0.0.1:8790` | |
 | `TD_TOKEN_FILE` | `~/.config/telegram-delegate/api-token` | |
 
-Инструменты агента: `reply { text, files?, reply_to? }`, `edit_message { message_id, text }`. Подтверждения инструментов (`claude/channel/permission`) уходят гостю кнопками, нажать может только гость маршрута. Закрытый stdin -> выход 0, роутер через `lostGraceSec` помечает маршрут `lost`, если не было stop.
+Инструменты агента: `reply { text, files?, reply_to?, buttons? }`, `edit_message { message_id, text }`. `buttons` - варианты ответа (до 8, каждый до 64 символов) inline-кнопками под последним куском ответа; нажатие гостя приходит в сессию сообщением с `kind="button"` и текстом варианта в content, кнопки снимаются, под сообщением - "Выбрано: <вариант>". Нажать может только гость маршрута; после перезапуска роутера старые кнопки отвечают "Запрос устарел.". Подтверждения инструментов (`claude/channel/permission`) уходят гостю кнопками, нажать может только гость маршрута. Закрытый stdin -> выход 0, роутер через `lostGraceSec` помечает маршрут `lost`, если не было stop.

@@ -292,4 +292,18 @@ describe('router api', () => {
     expect(out.calls).toEqual([])
     expect((await call(url, 'POST', '/sessions/s1/reply', { text: '', files: [own] })).status).toBe(200)
   })
+
+  it('reply passes buttons and validates limits', async () => {
+    const { url, out } = await setup()
+    await call(url, 'POST', '/routes', { ...route, tgUserId: '42' })
+    expect((await call(url, 'POST', '/sessions/s1/reply', { text: 'выбор', buttons: ['A', 'B'] })).status).toBe(200)
+    expect(out.calls[0]).toEqual({ fn: 'sendText', args: ['42', 'выбор', undefined, { sessionId: 's1', options: ['A', 'B'] }] })
+    const nine = Array.from({ length: 9 }, (_, i) => `v${i}`)
+    expect((await call(url, 'POST', '/sessions/s1/reply', { text: 'выбор', buttons: nine })).status).toBe(400)
+    expect((await call(url, 'POST', '/sessions/s1/reply', { text: 'выбор', buttons: ['x'.repeat(65)] })).status).toBe(400)
+    expect((await call(url, 'POST', '/sessions/s1/reply', { text: 'выбор', buttons: [' '] })).status).toBe(400)
+    expect((await call(url, 'POST', '/sessions/s1/reply', { text: '', files: ['/tmp/a'], buttons: ['A'] })).status).toBe(400)
+    expect(out.calls).toHaveLength(1)
+  })
 })
+

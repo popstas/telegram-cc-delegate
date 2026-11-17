@@ -3,7 +3,7 @@ import type { PermissionRequest, SessionEvent } from '../router/types.ts'
 export interface RouterClient {
   /** SSE subscription with reconnect (1 s, x2, up to 30 s; also on 404 while the route is not created yet). Resolves on abort. */
   events(onEvent: (e: SessionEvent) => void, signal: AbortSignal): Promise<void>
-  reply(a: { text: string; files?: string[]; reply_to?: string }): Promise<string[]>
+  reply(a: { text: string; files?: string[]; reply_to?: string; buttons?: string[] }): Promise<string[]>
   edit(a: { message_id: string; text: string }): Promise<void>
   permission(r: PermissionRequest): Promise<void>
 }

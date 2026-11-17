@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { basename, extname, isAbsolute } from 'node:path'
 import { InputFile } from 'grammy'
@@ -6,7 +7,7 @@ import { errInfo, log } from '../log.ts'
 import { T } from '../texts.ts'
 import { chunk } from './chunk.ts'
 import type { Hub } from './hub.ts'
-import type { IncomingMessage, Outbound, PermissionRequest, SessionEvent } from './types.ts'
+import { BUTTON_TEXT_MAX, BUTTONS_MAX, type AnswerButtons, type IncomingMessage, type Outbound, type PermissionRequest, type SessionEvent } from './types.ts'
 
 export interface BotLike {
   api: {
@@ -38,7 +39,22 @@ const TEXT_MAX = 4096
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 const CALLBACK_RE = /^perm:(allow|deny|more):([a-km-z]{5})$/
 const STOP_RE = /^\s*\/stop(@\w+)?\s*$/i
+const BUTTON_RE = /^btn:([a-z0-9]{6}):([0-7])$/
+const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789'
 const LABEL = { allow: 'Разрешено', deny: 'Отклонено' } as const
+
+/** Answer options under a bot message; callback_data carries only the set id and the index. */
+interface Choice {
+  sessionId: string
+  userId: string
+  options: string[]
+  text: string
+  messageId: number
+}
+
+function newChoiceId(): string {
+  return [...randomBytes(6)].map(b => ID_CHARS[b % ID_CHARS.length]).join('')
+}
 
 interface Pending {
   sessionId: string
@@ -84,6 +100,7 @@ export function createTelegram(deps: {
   const { bot, store, hub, media, adminUserId } = deps
   const now = deps.now ?? Date.now
   const pending = new Map<string, Pending>()
+  const choices = new Map<string, Choice>()
   let username = ''
 
   /** Active route: deliver now, or keep for the reconnecting channel server (router restart, grace window). */
@@ -96,13 +113,27 @@ export function createTelegram(deps: {
   const say = (chatId: string, text: string) =>
     bot.api.sendMessage(chatId, text).catch(e => log(`out service-text to ${chatId} failed ${errInfo(e)}`))
 
-  async function sendText(userId: string, text: string, replyTo?: string): Promise<string[]> {
+  async function sendText(userId: string, text: string, replyTo?: string, buttons?: AnswerButtons): Promise<string[]> {
+    if (buttons) {
+      if (buttons.options.length > BUTTONS_MAX) throw new Error(`buttons: не больше ${BUTTONS_MAX} вариантов`)
+      if (buttons.options.some(o => !o.trim() || o.length > BUTTON_TEXT_MAX)) throw new Error(`buttons: вариант должен быть непустым и не длиннее ${BUTTON_TEXT_MAX} символов`)
+    }
     const ids: string[] = []
     const parts = chunk(text)
     for (let i = 0; i < parts.length; i++) {
-      const opts = i === 0 && replyTo ? { reply_parameters: { message_id: Number(replyTo) } } : undefined
-      const sent = await bot.api.sendMessage(userId, parts[i]!, opts)
+      const last = i === parts.length - 1
+      const opts: Record<string, unknown> = {}
+      if (i === 0 && replyTo) opts.reply_parameters = { message_id: Number(replyTo) }
+      let choiceId: string | undefined
+      if (last && buttons?.options.length) {
+        choiceId = newChoiceId()
+        opts.reply_markup = { inline_keyboard: buttons.options.map((o, j) => [{ text: o, callback_data: `btn:${choiceId}:${j}` }]) }
+      }
+      const sent = await bot.api.sendMessage(userId, parts[i]!, Object.keys(opts).length ? opts : undefined)
       ids.push(String(sent.message_id))
+      if (choiceId && buttons) {
+        choices.set(choiceId, { sessionId: buttons.sessionId, userId, options: buttons.options, text: parts[i]!, messageId: sent.message_id })
+      }
     }
     return ids
   }
@@ -233,6 +264,8 @@ export function createTelegram(deps: {
 
   async function onCallback(q: { id: string; from: { id: number; username?: string }; data: string }, answer: (text?: string) => Promise<void>): Promise<void> {
     const note = (decision: string) => log(`in cb ${who(q.from.id, q.from.username)} ${q.data.slice(0, 64).replace(/\s+/g, '_')} ${decision}`)
+    const b = BUTTON_RE.exec(q.data)
+    if (b) return onButton(q, b[1]!, Number(b[2]), note, answer)
     const m = CALLBACK_RE.exec(q.data)
     if (!m) {
       note('ignored')
@@ -270,6 +303,48 @@ export function createTelegram(deps: {
     pending.delete(request_id)
     closeRequestMessage(p, LABEL[action])
     return answer(LABEL[action])
+  }
+
+  async function onButton(
+    q: { from: { id: number; username?: string } },
+    choiceId: string,
+    index: number,
+    note: (decision: string) => void,
+    answer: (text?: string) => Promise<void>,
+  ): Promise<void> {
+    const c = choices.get(choiceId)
+    if (!c || index >= c.options.length) {
+      note('stale')
+      return answer(T.stale)
+    }
+    if (String(q.from.id) !== c.userId) {
+      note('not-authorized')
+      return answer(T.notAuthorized)
+    }
+    const route = store.get(c.sessionId)
+    if (!route || route.status !== 'active') {
+      choices.delete(choiceId)
+      note(`stale ${route ? where(route) : c.sessionId}`)
+      return answer(T.stale)
+    }
+    const option = c.options[index]!
+    choices.delete(choiceId)
+    const sent = deliver(c.sessionId, {
+      type: 'message',
+      content: option,
+      meta: {
+        chat_id: c.userId,
+        message_id: String(c.messageId),
+        user: q.from.username ?? c.userId,
+        user_id: c.userId,
+        ts: new Date(now()).toISOString(),
+        kind: 'button',
+      },
+    })
+    note(`button ${choiceId} ${sent ? '->' : 'queued'} ${where(route)}`)
+    store.touch(c.sessionId, now())
+    bot.api.editMessageText(c.userId, c.messageId, `${c.text}\n\nВыбрано: ${option}`.slice(0, TEXT_MAX)).catch(e => log(`out button-close ${c.sessionId} failed ${errInfo(e)}`))
+    return answer()
   }
 
   return {

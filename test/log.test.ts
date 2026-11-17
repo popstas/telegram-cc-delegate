@@ -218,3 +218,30 @@ describe('outbound log', () => {
     }
   })
 })
+
+describe('button log', () => {
+  it('press, foreign and stale lines without option text', async () => {
+    const store = new RouteStore(join(mkdtempSync(join(tmpdir(), 'td-log-')), 'routes.json'))
+    store.upsert({ sessionId: 's1', sessionName: 'guest-task', headId: 'h', tgUserId: '42' }, 0)
+    store.setStatus('s1', 'active')
+    const calls: unknown[][] = []
+    const bot = botStub()
+    const orig = bot.api.sendMessage
+    bot.api.sendMessage = async (...a) => { calls.push(a); return orig(...a) }
+    const tg = createTelegram({ bot, store, hub: hubStub(true), media: { toEvent: async () => undefined }, adminUserId: '1' })
+    await tg.sendText('42', 'q', undefined, { sessionId: 's1', options: [SECRET, 'Нет'] })
+    const data = (calls[0]![2] as { reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> } }).reply_markup.inline_keyboard[0]![0]!.callback_data
+    const id = data.split(':')[1]
+    lines = []
+    await tg.onCallback({ id: 'q', from: { id: 7 }, data }, async () => {})
+    await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data }, async () => {})
+    await tg.onCallback({ id: 'q', from: { id: 42 }, data }, async () => {})
+    expect(lines).toEqual([
+      `in cb from=7 ${data} not-authorized`,
+      `in cb from=42 @alexiapost ${data} button ${id} -> guest-task (s1)`,
+      `in cb from=42 ${data} stale`,
+    ])
+    noSecret()
+  })
+})
+

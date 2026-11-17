@@ -72,6 +72,14 @@ describe('router + channel server end to end', () => {
       expect(res.isError).toBeFalsy()
       expect(sent.at(-1)).toMatchObject({ chat: '42', text: 'здравствуйте' })
 
+      await client.callTool({ name: 'reply', arguments: { text: 'Что выбираете?', buttons: ['Первый', 'Второй'] } })
+      const withKb = sent.at(-1)!
+      expect(withKb.text).toBe('Что выбираете?')
+      const kb = (withKb.opts as { reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> } }).reply_markup.inline_keyboard
+      await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data: kb[1]![0]!.callback_data }, async () => {})
+      await until(() => inbox.length === 2)
+      expect(inbox[1]).toMatchObject({ content: 'Второй', meta: { kind: 'button', user_id: '42' } })
+
       await client.notification({ method: 'notifications/claude/channel/permission_request', params: { request_id: 'abcde', tool_name: 'Bash', description: 'ls', input_preview: '{}' } } as never)
       await until(() => sent.some(s => s.text === 'Подтвердить: Bash - ls'))
       const answers: Array<string | undefined> = []

@@ -310,4 +310,74 @@ describe('telegram side', () => {
     await tg.init()
     expect(tg.botUsername()).toBe('td_test_bot')
   })
+
+  describe('answer buttons', () => {
+    const lastMarkup = (bot: ReturnType<typeof fakeBot>) => {
+      const c = bot.calls.filter(c => c.fn === 'sendMessage').at(-1)!
+      return (c.args[2] as { reply_markup?: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } } | undefined)?.reply_markup
+    }
+
+    it('reply with buttons puts one button per row under the last chunk', async () => {
+      const { tg, bot } = setup()
+      const ids = await tg.sendText('42', 'x'.repeat(5000), undefined, { sessionId: 's1', options: ['Да', 'Нет, позже'] })
+      expect(ids).toHaveLength(2)
+      const calls = bot.calls.filter(c => c.fn === 'sendMessage')
+      expect(JSON.stringify(calls[0]!.args[2] ?? {})).not.toContain('inline_keyboard')
+      const kb = lastMarkup(bot)!.inline_keyboard
+      expect(kb.map(r => r.map(b => b.text))).toEqual([['Да'], ['Нет, позже']])
+      for (const row of kb) {
+        expect(row[0]!.callback_data).toMatch(/^btn:[a-z0-9]{6}:[0-7]$/)
+        expect(Buffer.byteLength(row[0]!.callback_data)).toBeLessThanOrEqual(64)
+        expect(row[0]!.callback_data).not.toContain('Да')
+      }
+    })
+
+    it('guest press becomes kind=button message and removes buttons', async () => {
+      const { tg, bot, hub, store } = setup()
+      store.matchSender({ id: '42', username: 'alexiapost' })
+      await tg.sendText('42', 'Выберите', undefined, { sessionId: 's1', options: ['A', 'B'] })
+      const data = lastMarkup(bot)!.inline_keyboard[1]![0]!.callback_data
+      const answers: Array<string | undefined> = []
+      await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data }, async t => { answers.push(t) })
+      expect(hub.sent).toHaveLength(1)
+      const ev = hub.sent[0]!.ev
+      if (ev.type !== 'message') throw new Error('not message')
+      expect(ev.content).toBe('B')
+      expect(ev.meta).toMatchObject({ kind: 'button', user_id: '42', user: 'alexiapost', chat_id: '42', message_id: '501' })
+      expect(ev.meta.ts).toMatch(/^\d{4}-/)
+      const edit = bot.calls.find(c => c.fn === 'editMessageText')!
+      expect(edit.args.slice(0, 3)).toEqual(['42', 501, 'Выберите\n\nВыбрано: B'])
+      expect(JSON.stringify(edit.args)).not.toContain('btn:')
+      expect(store.get('s1')?.lastMessageAt).toBe(5000)
+      // second press of the same set
+      await tg.onCallback({ id: 'q', from: { id: 42 }, data }, async t => { answers.push(t) })
+      expect(answers.at(-1)).toBe('Запрос устарел.')
+      expect(hub.sent).toHaveLength(1)
+    })
+
+    it('foreign press rejected, unknown set and closed route are stale', async () => {
+      const { tg, bot, hub, store } = setup()
+      await tg.sendText('42', 'Выберите', undefined, { sessionId: 's1', options: ['A'] })
+      const data = lastMarkup(bot)!.inline_keyboard[0]![0]!.callback_data
+      const answers: Array<string | undefined> = []
+      await tg.onCallback({ id: 'q', from: { id: 999 }, data }, async t => { answers.push(t) })
+      await tg.onCallback({ id: 'q', from: { id: 42 }, data: 'btn:zzzzzz:0' }, async t => { answers.push(t) })
+      await tg.onCallback({ id: 'q', from: { id: 42 }, data: data.replace(/:0$/, ':5') }, async t => { answers.push(t) })
+      store.setStatus('s1', 'lost')
+      await tg.onCallback({ id: 'q', from: { id: 42 }, data }, async t => { answers.push(t) })
+      expect(answers).toEqual(['Not authorized.', 'Запрос устарел.', 'Запрос устарел.', 'Запрос устарел.'])
+      expect(hub.sent).toEqual([])
+    })
+
+    it('text instead of press keeps buttons', async () => {
+      const { tg, bot, hub } = setup()
+      await tg.sendText('42', 'Выберите', undefined, { sessionId: 's1', options: ['A'] })
+      const data = lastMarkup(bot)!.inline_keyboard[0]![0]!.callback_data
+      await tg.onMessage(msg('свой вариант'))
+      expect(bot.calls.some(c => c.fn === 'editMessageText')).toBe(false)
+      await tg.onCallback({ id: 'q', from: { id: 42 }, data }, async () => {})
+      expect(hub.sent.map(s => (s.ev as { content: string }).content)).toEqual(['свой вариант', 'A'])
+    })
+  })
 })
+

@@ -166,6 +166,23 @@ describe('channel server', () => {
     expect(JSON.stringify(res.content)).toContain('100')
   })
 
+  it('reply tool passes buttons and enforces 8 x 64 limits', async () => {
+    const { fake, client } = await setup()
+    const ok = await client.callTool({ name: 'reply', arguments: { text: 'выбор', buttons: ['A', 'B'] } })
+    expect(ok.isError).toBeFalsy()
+    expect(JSON.parse(fake.requests.find(r => r.url === `/sessions/${SID}/reply`)!.body)).toEqual({ text: 'выбор', buttons: ['A', 'B'] })
+    const nine = await client.callTool({ name: 'reply', arguments: { text: 'выбор', buttons: Array.from({ length: 9 }, (_, i) => `v${i}`) } })
+    expect(nine.isError).toBe(true)
+    expect(JSON.stringify(nine.content)).toContain('не больше 8')
+    const long = await client.callTool({ name: 'reply', arguments: { text: 'выбор', buttons: ['x'.repeat(65)] } })
+    expect(long.isError).toBe(true)
+    expect(JSON.stringify(long.content)).toContain('64')
+    expect(fake.requests.filter(r => r.url === `/sessions/${SID}/reply`)).toHaveLength(1)
+    const tools = await client.listTools()
+    expect(JSON.stringify(tools.tools.find(t => t.name === 'reply')!.inputSchema)).toContain('buttons')
+    expect(client.getInstructions()).toContain('kind="button"')
+  })
+
   it('edit_message tool posts to router', async () => {
     const { fake, client } = await setup()
     const res = await client.callTool({ name: 'edit_message', arguments: { message_id: '5', text: 'готово' } })

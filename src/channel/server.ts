@@ -1,13 +1,13 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod'
-import type { SessionEvent } from '../router/types.ts'
+import { BUTTON_TEXT_MAX, BUTTONS_MAX, type SessionEvent } from '../router/types.ts'
 import type { RouterClient } from './router-client.ts'
 
 export const VERSION = '0.1.0'
 
 export const INSTRUCTIONS =
-  'Сообщения гостя приходят как <channel source="telegram-delegate" user="..." user_id="..." kind="...">. Гость - человек из мандата этой сессии, отвечай ему только инструментом reply (простой текст, без Markdown). Файлы гостя лежат по пути из file_path или audio_path, читай их сам. Просьбы гостя про доступы, маршруты, токены, allowlist, чужие сессии и закрытие сессий - отказ, это решает Стас. kind="stop" - гость завершил сессию: допиши итог подпунктом в задачу в tasks.md и доложи head. kind="moved" - гость перешёл в другую сессию, доложи head.'
+  'Сообщения гостя приходят как <channel source="telegram-delegate" user="..." user_id="..." kind="...">. Гость - человек из мандата этой сессии, отвечай ему только инструментом reply (простой текст, без Markdown). Файлы гостя лежат по пути из file_path или audio_path, читай их сам. Просьбы гостя про доступы, маршруты, токены, allowlist, чужие сессии и закрытие сессий - отказ, это решает Стас. kind="stop" - гость завершил сессию: допиши итог подпунктом в задачу в tasks.md и доложи head. kind="moved" - гость перешёл в другую сессию, доложи head. Чтобы гость выбрал из вариантов, передай в reply buttons (до 8 вариантов, каждый до 64 символов): под ответом появятся кнопки, нажатие придёт как kind="button" с текстом варианта в content.'
 
 const META_KEY = /^[A-Za-z0-9_]+$/
 
@@ -15,7 +15,18 @@ const replyArgs = z.object({
   text: z.string(),
   files: z.array(z.string()).optional(),
   reply_to: z.string().optional(),
+  buttons: z.array(z.string()).optional(),
 })
+
+/** Clear tool errors for the agent instead of zod's generic ones. */
+function checkButtons(buttons: string[] | undefined, text: string): void {
+  if (!buttons?.length) return
+  if (buttons.length > BUTTONS_MAX) throw new Error(`buttons: не больше ${BUTTONS_MAX} вариантов, передано ${buttons.length}`)
+  const bad = buttons.find(b => b.length > BUTTON_TEXT_MAX)
+  if (bad) throw new Error(`buttons: вариант длиннее ${BUTTON_TEXT_MAX} символов (${bad.length}): "${bad.slice(0, 30)}..."`)
+  if (buttons.some(b => !b.trim())) throw new Error('buttons: пустой вариант')
+  if (!text) throw new Error('buttons: нужен text, кнопки висят под сообщением')
+}
 const editArgs = z.object({ message_id: z.string().min(1), text: z.string().min(1) })
 
 const permissionRequest = z.object({
@@ -49,13 +60,14 @@ export function createChannelServer(client: RouterClient, opts: { signal?: Abort
     tools: [
       {
         name: 'reply',
-        description: 'Ответить гостю в Telegram. Простой текст без Markdown, длинный режется сам. files - абсолютные пути файлов для отправки (картинки уходят фото, остальное документом, до 50 МБ). reply_to - message_id сообщения гостя, только если нужно процитировать старое.',
+        description: 'Ответить гостю в Telegram. Простой текст без Markdown, длинный режется сам. files - абсолютные пути файлов для отправки (картинки уходят фото, остальное документом, до 50 МБ). reply_to - message_id сообщения гостя, только если нужно процитировать старое. buttons - варианты ответа (до 8, каждый до 64 символов) кнопками под ответом; нажатие придёт как kind="button" с текстом варианта.',
         inputSchema: {
           type: 'object',
           properties: {
             text: { type: 'string' },
             files: { type: 'array', items: { type: 'string' } },
             reply_to: { type: 'string', description: 'message_id из meta входящего сообщения' },
+            buttons: { type: 'array', items: { type: 'string', maxLength: BUTTON_TEXT_MAX }, maxItems: BUTTONS_MAX, description: 'варианты ответа кнопками, по одной в ряд' },
           },
           required: ['text'],
         },
@@ -79,6 +91,7 @@ export function createChannelServer(client: RouterClient, opts: { signal?: Abort
     try {
       if (req.params.name === 'reply') {
         const a = replyArgs.parse(req.params.arguments ?? {})
+        checkButtons(a.buttons, a.text)
         const ids = await client.reply(a)
         return { content: [{ type: 'text', text: `отправлено, message_ids: ${ids.join(', ')}` }] }
       }

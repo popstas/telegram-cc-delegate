@@ -6,7 +6,7 @@ import { errInfo, log } from '../log.ts'
 import { A, T } from '../texts.ts'
 import { assertSendable } from './files.ts'
 import type { Hub } from './hub.ts'
-import type { Outbound } from './types.ts'
+import { BUTTON_TEXT_MAX, BUTTONS_MAX, type Outbound } from './types.ts'
 
 const MAX_BODY = 1024 * 1024
 
@@ -22,7 +22,10 @@ const replyBody = z.object({
   text: z.string(),
   files: z.array(z.string()).optional(),
   reply_to: z.string().optional(),
-}).refine(r => r.text.length > 0 || (r.files?.length ?? 0) > 0, { message: 'text or files required' })
+  buttons: z.array(z.string().trim().min(1).max(BUTTON_TEXT_MAX)).max(BUTTONS_MAX).optional(),
+})
+  .refine(r => r.text.length > 0 || (r.files?.length ?? 0) > 0, { message: 'text or files required' })
+  .refine(r => !r.buttons?.length || r.text.length > 0, { message: 'buttons need text' })
 
 const editBody = z.object({ message_id: z.string().min(1), text: z.string().min(1) })
 
@@ -213,9 +216,12 @@ export function createApi(deps: {
             }
           }
         }
-        const textIds = body.text ? await outbound(`reply ${id}`, () => out.sendText(r.tgUserId, body.text, body.reply_to)) : []
+        const buttons = body.buttons?.length ? { sessionId: id, options: body.buttons } : undefined
+        const textIds = body.text
+          ? await outbound(`reply ${id}`, () => buttons ? out.sendText(r.tgUserId, body.text, body.reply_to, buttons) : out.sendText(r.tgUserId, body.text, body.reply_to))
+          : []
         const fileIds = body.files?.length ? await outbound(`reply ${id}`, () => out.sendFiles(r.tgUserId, body.files!)) : []
-        log(`out reply ${id} chunks=${textIds.length} files=${fileIds.length} ok`)
+        log(`out reply ${id} chunks=${textIds.length} files=${fileIds.length}${buttons ? ` buttons=${buttons.options.length}` : ''} ok`)
         return send(res, 200, { message_ids: [...textIds, ...fileIds] })
       }
       if (action === 'edit' && method === 'POST') {

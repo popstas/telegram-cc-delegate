@@ -2,6 +2,15 @@ export type SessionEvent =
   | { type: 'message'; content: string; meta: Record<string, string> }
   | { type: 'permission'; request_id: string; behavior: 'allow' | 'deny' }
 
+export interface AnswerButtons {
+  sessionId: string
+  options: string[]
+}
+
+/** Answer buttons: up to 8 options, each up to 64 chars. */
+export const BUTTONS_MAX = 8
+export const BUTTON_TEXT_MAX = 64
+
 export interface PermissionRequest {
   request_id: string
   tool_name: string
@@ -11,7 +20,8 @@ export interface PermissionRequest {
 
 /** Everything the router sends to Telegram. Implemented by createTelegram (task 3). */
 export interface Outbound {
-  sendText(userId: string, text: string, replyTo?: string): Promise<string[]>
+  /** buttons: answer options shown under the last chunk; a press comes back to sessionId as kind=button. */
+  sendText(userId: string, text: string, replyTo?: string, buttons?: AnswerButtons): Promise<string[]>
   sendFiles(userId: string, files: string[]): Promise<string[]>
   editText(userId: string, messageId: string, text: string): Promise<void>
   askPermission(userId: string, sessionId: string, req: PermissionRequest): Promise<void>
