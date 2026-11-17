@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Telegram router and Claude Code channel server: a guest talks to a delegated Claude Code session",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24"

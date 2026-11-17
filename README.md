@@ -1,75 +1,192 @@
 # telegram-delegate
 
-Стас отдаёт задачу коллеге: коллега пишет Telegram-боту в личку и говорит напрямую с отдельной сессией Claude Code (сессия-ребёнок head-сессии Стаса).
+Let someone talk to a [Claude Code](https://claude.com/claude-code) session directly in Telegram.
 
-- **Роутер** (`src/router/`) - долгоживущий процесс на pc-virt. Владеет ботом (long polling), держит маршруты "гость -> sessionId", HTTP API на `127.0.0.1:8790`.
-- **Канал-сервер** (`src/channel/`) - stdio MCP-сервер (Claude Code Channels) внутри сессии-ребёнка. Держит SSE-подписку на роутер.
+You start a Claude Code session for a task and hand it to a person (the "guest"). The guest writes to your Telegram bot in a private chat; their messages, files and voice messages arrive in that session, and the agent answers them in Telegram. Each session is bound to one guest: everyone else gets "There is no active session for you right now."
 
-Дизайн: [docs/design.md](docs/design.md), план: [docs/plan.md](docs/plan.md).
+It is built on Claude Code Channels and has two parts:
 
-## Разработка
+- **Router** (`src/router/`) - a long-running process (systemd user service). It owns the bot (long polling), keeps routes "guest -> sessionId" and serves an HTTP API on `127.0.0.1:8790` only.
+- **Channel server** (`src/channel/`) - a stdio MCP server that Claude Code starts inside the delegated session. It subscribes to the router (SSE) for the guest's messages and gives the agent the `reply` and `edit_message` tools.
+
+```
+guest <-> Telegram <-> router (bot + 127.0.0.1 API) <-SSE/HTTP-> channel server (MCP, stdio) <-> Claude Code session
+```
+
+What the router does besides routing:
+
+- Files and photos from the guest are saved to the session's inbox; the agent gets the path. Voice, audio and video notes are transcribed with [Deepgram](https://deepgram.com) when `DEEPGRAM_API_KEY` is set.
+- Tool permission prompts of the session (`claude/channel/permission`) go to the guest as Allow / Deny buttons. Only the route's guest can press them.
+- The agent can attach answer options as buttons under a reply; a press comes back to the session as a message.
+- `/stop` from the guest closes the route and tells the session.
+- The bot owner (`adminUserId`) gets a notice when a session drops without `/stop`, when a guest is silent for `idleHours` and when a guest's route moves to another session.
+- The log (journalctl) has one line per routing decision, without the guest's texts, captions or file names.
+
+## Requirements
+
+- Node.js 24+ (TypeScript runs directly through type stripping, no build step).
+- Claude Code with channels support (`--dangerously-load-development-channels`).
+- A Telegram bot token from [@BotFather](https://t.me/BotFather).
+- Optional: a Deepgram API key for voice messages.
+- Linux with systemd for the service (the router itself is a plain `node` process).
+
+## Install the router
 
 ```bash
+git clone <this repo> telegram-delegate
+cd telegram-delegate
 npm install
-npm test
-npm run typecheck
+deploy/install.sh
 ```
 
-Node 24, `.ts` запускается напрямую (`node file.ts`), без сборки.
+`deploy/install.sh` installs the user unit to `~/.config/systemd/user/telegram-delegate.service` (with the absolute paths of this checkout and of `node`; set `NODE=/path/to/node` to choose another binary, re-run after moving the checkout or switching Node), creates the config and state dirs and a `config.json` template. It does not create the secrets file and does not start the service.
 
-## Роутер: установка и запуск (pc-virt)
+Then:
 
-```bash
-deploy/install.sh                       # unit в ~/.config/systemd/user, каталоги, шаблон config.json; .env НЕ создаёт
-# Стас вписывает секреты в ~/.config/telegram-delegate/.env (права 600):
-#   TELEGRAM_BOT_TOKEN=...
-#   DEEPGRAM_API_KEY=...
-systemctl --user enable --now telegram-delegate
-journalctl --user -u telegram-delegate -n 20   # "polling as @<бот>"
-```
+1. Put your numeric Telegram user id into `adminUserId` in `~/.config/telegram-delegate/config.json` (for example, [@userinfobot](https://t.me/userinfobot) tells it). The router refuses to start without it.
+2. Create `~/.config/telegram-delegate/.env` with mode 600:
 
-Без `TELEGRAM_BOT_TOKEN` роутер выходит с кодом 1.
+   ```
+   TELEGRAM_BOT_TOKEN=123456:ABC...
+   DEEPGRAM_API_KEY=...        # optional
+   ```
 
-## Файлы
+3. Start it and check the log:
 
-| Путь | Кто пишет | Что |
+   ```bash
+   systemctl --user enable --now telegram-delegate
+   journalctl --user -u telegram-delegate -n 20   # "config ok language=en port=8790", "polling as @your_bot"
+   ```
+
+To keep the service running after logout: `loginctl enable-linger $USER`.
+
+The router exits with code 1 on a bad `config.json`, without `TELEGRAM_BOT_TOKEN` or when Telegram rejects the token. Real environment variables override `.env`.
+
+## Configuration
+
+`~/.config/telegram-delegate/config.json`:
+
+| Key | Default | Meaning |
 |---|---|---|
-| `~/.config/telegram-delegate/.env` | только Стас | `TELEGRAM_BOT_TOKEN`, `DEEPGRAM_API_KEY` |
-| `~/.config/telegram-delegate/config.json` | install.sh (шаблон), Стас | `adminUserId`, `port` (8790), `idleHours` (24), `lostGraceSec` (60), `deepgram.language` (ru), `deepgram.model` (по умолчанию nova-3), `writeFirst` (false: ребёнок пишет гостю первым, если бот знает его id) |
-| `~/.config/telegram-delegate/api-token` | роутер при первом старте (600) | Bearer-токен локального API |
-| `~/.local/state/telegram-delegate/routes.json` | роутер | маршруты "гость -> sessionId" |
-| `~/.local/state/telegram-delegate/known.json` | роутер | кто писал боту в личку: username, numeric id, время последнего сообщения (без текстов); при старте дополняется из маршрутов |
-| `~/.local/state/telegram-delegate/inbox/<sessionId>/` | роутер | файлы и голосовые гостя |
-| `~/.local/state/telegram-delegate/mcp/<sessionId>.json` | скилл telegram-delegate | MCP-конфиг сессии-ребёнка |
+| `adminUserId` | required | Numeric Telegram id of the bot owner; admin notices go there. |
+| `language` | `"en"` | Language of the bot texts for the guest and the owner: `"en"` or `"ru"`. Anything else is a startup error. |
+| `port` | `8790` | API port, always on `127.0.0.1`. |
+| `idleHours` | `24` | Notify the owner once when an active guest has been silent this long. |
+| `lostGraceSec` | `60` | How long the router waits for a dropped channel server to reconnect before it marks the route `lost`. |
+| `writeFirst` | `false` | Whether the agent should write to the guest first. The router only reports it (see `POST /routes`); the bot can write first only to a guest whose numeric id it knows. |
+| `deepgram.language` | value of `language` | Deepgram transcription language, for example `"en"`, `"ru"`, `"multi"`. |
+| `deepgram.model` | `"nova-3"` | Deepgram model. |
 
-Пути учитывают `XDG_CONFIG_HOME` / `XDG_STATE_HOME`.
+Texts the agent reads (channel server instructions, tool descriptions, API errors) are always in English.
 
-## API роутера
+Files:
 
-`127.0.0.1:8790`, все запросы с `Authorization: Bearer <api-token>`.
+| Path | Written by | Contents |
+|---|---|---|
+| `~/.config/telegram-delegate/.env` | you | `TELEGRAM_BOT_TOKEN`, `DEEPGRAM_API_KEY` |
+| `~/.config/telegram-delegate/config.json` | `install.sh` (template), you | the keys above |
+| `~/.config/telegram-delegate/api-token` | router on first start (mode 600) | Bearer token of the local API |
+| `~/.local/state/telegram-delegate/routes.json` | router | routes |
+| `~/.local/state/telegram-delegate/known.json` | router | who wrote to the bot in private: username, numeric id, last message time (no texts) |
+| `~/.local/state/telegram-delegate/inbox/<sessionId>/` | router | guest files and voice messages |
 
-| Метод и путь | Что |
+Paths follow `XDG_CONFIG_HOME` and `XDG_STATE_HOME`.
+
+## Router API
+
+`http://127.0.0.1:8790`, every request needs `Authorization: Bearer <api-token>`.
+
+| Method and path | What it does |
 |---|---|
 | `GET /health` | `{ ok, botUsername }` |
 | `GET /routes` | `{ routes }` |
-| `POST /routes` | `{ sessionId, sessionName, headId, tgUsername?, tgUserId? }` -> 201 `{ route, moved?, canWriteFirst, writeFirst }`; маршрут по username без id получает id из known.json; `canWriteFirst` - id известен, `writeFirst` = `config.writeFirst && canWriteFirst` |
-| `GET /known?tgUsername=` или `?tgUserId=` | `{ known, tgUserId?, canWriteFirst, writeFirst }` без создания маршрута (для `--dry-run`) |
-| `DELETE /routes/:sessionId` | маршрут -> `closed` |
-| `GET /sessions/:id/events` | SSE для канал-сервера; подключение делает маршрут `active` |
-| `POST /sessions/:id/reply` | `{ text, files?, reply_to?, buttons? }` -> `{ message_ids }`; 409 пока гость не писал боту; buttons до 8 x 64 символа, нужен text |
+| `POST /routes` | Body `{ sessionId, sessionName, headId, tgUsername?, tgUserId? }`, one of `tgUsername` / `tgUserId` is required. Creates or updates the route in status `pending` and answers 201 `{ route, moved?, canWriteFirst, writeFirst }`. A route by username gets the numeric id from `known.json` when the guest has written to the bot before. `canWriteFirst` - the id is known; `writeFirst` = `config.writeFirst && canWriteFirst`. If the same guest had another open route, it is moved: `moved` is the old route, its session and the owner are told. |
+| `GET /known?tgUsername=` or `?tgUserId=` | `{ known, tgUserId?, canWriteFirst, writeFirst }` without creating a route. |
+| `DELETE /routes/:sessionId` | Closes the route. |
+| `GET /sessions/:id/events` | SSE stream for the channel server; connecting makes the route `active`. |
+| `POST /sessions/:id/reply` | `{ text, files?, reply_to?, buttons? }` -> `{ message_ids }`. 409 while the bot does not know the guest's id yet. `buttons`: up to 8 options, up to 64 characters each, needs `text`. |
 | `POST /sessions/:id/edit` | `{ message_id, text }` |
-| `POST /sessions/:id/permission` | `{ request_id, tool_name, description, input_preview }` -> кнопки гостю |
+| `POST /sessions/:id/permission` | `{ request_id, tool_name, description, input_preview }` -> Allow / Deny buttons for the guest. |
 
-Обрыв подписки active-маршрута дольше `lostGraceSec` -> `lost` и сообщение админу "Сессия завершена" (имя и id - в журнале, строка `admin lost <sessionId>`). Ошибка Telegram 403 в reply (гость не нажимал Start или заблокировал бота) приходит агенту текстом `Telegram 403: ...`.
+`headId` is a free-form label of whoever delegated the session (it is stored, not interpreted); an empty string is fine.
 
-## Канал-сервер
+Route statuses: `pending` (created, the session has not connected yet) -> `active` (channel server connected) -> `closed` (`/stop` from the guest or `DELETE`) or `lost` (the channel server dropped for longer than `lostGraceSec`). The guest of a `pending` or `lost` route gets a short notice instead of silence.
 
-Запускает Claude Code в сессии-ребёнке через `--mcp-config` (файл пишет скилл telegram-delegate) и `--dangerously-load-development-channels server:telegram-delegate`.
+A Telegram 403 on reply (the guest never pressed Start or blocked the bot) comes back to the agent as an error starting with `Telegram 403:`.
 
-| Переменная | Умолчание | |
+## Channel server
+
+Claude Code starts it from an MCP config. Environment:
+
+| Variable | Default | |
 |---|---|---|
-| `TD_SESSION_ID` | - (обязательна, uuid) | sessionId сессии, совпадает с маршрутом |
+| `TD_SESSION_ID` | required, uuid | Must equal the session id and the route's `sessionId`. |
 | `TD_ROUTER_URL` | `http://127.0.0.1:8790` | |
 | `TD_TOKEN_FILE` | `~/.config/telegram-delegate/api-token` | |
 
-Инструменты агента: `reply { text, files?, reply_to?, buttons? }`, `edit_message { message_id, text }`. `buttons` - варианты ответа (до 8, каждый до 64 символов) inline-кнопками под последним куском ответа; нажатие гостя приходит в сессию сообщением с `kind="button"` и текстом варианта в content, кнопки снимаются, под сообщением - "Выбрано: <вариант>". Нажать может только гость маршрута; после перезапуска роутера старые кнопки отвечают "Запрос устарел.". Подтверждения инструментов (`claude/channel/permission`) уходят гостю кнопками, нажать может только гость маршрута. Закрытый stdin -> выход 0, роутер через `lostGraceSec` помечает маршрут `lost`, если не было stop.
+Agent tools:
+
+- `reply { text, files?, reply_to?, buttons? }` - plain text, long text is split. `files` are absolute paths (images go as photos, the rest as documents, up to 50 MB; files from the router's own dirs are refused, except the session's inbox). `buttons` are answer options under the last chunk; a press arrives with `kind="button"` and the option text, the buttons are removed and the message shows the choice.
+- `edit_message { message_id, text }` - edits a message sent earlier (no notification for the guest).
+
+Incoming messages arrive as `<channel source="telegram-delegate" user="..." user_id="..." kind="...">` with `kind` = `guest`, `button`, `stop` (the guest sent `/stop`) or `moved` (the guest's route moved to another session). Files and voice messages add `file_path` / `audio_path`, `file_name`, `file_mime`.
+
+Tool permission prompts of the session go to the guest as buttons; the guest can also answer `y <id>` / `n <id>` as text. When Claude Code closes stdin, the channel server exits; without `/stop` the router marks the route `lost` after `lostGraceSec` and tells the owner.
+
+## Start a delegated session by hand
+
+You need the router running and the guest's Telegram username or numeric id. The guest should open the bot and press Start: until the bot knows their id it cannot write to them.
+
+1. Pick a session id and create the route:
+
+   ```bash
+   SID=$(uuidgen | tr 'A-Z' 'a-z')
+   TOKEN=$(cat ~/.config/telegram-delegate/api-token)
+   curl -s -X POST http://127.0.0.1:8790/routes \
+     -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+     -d "{\"sessionId\":\"$SID\",\"sessionName\":\"report-review\",\"headId\":\"\",\"tgUsername\":\"guest_username\"}"
+   ```
+
+   The answer has `canWriteFirst`: `false` means the bot has not seen this guest yet, so the agent has to wait for their first message.
+
+2. Write an MCP config for this session (use the absolute path of your checkout):
+
+   ```bash
+   cat > /tmp/td-$SID.json <<EOF
+   {
+     "mcpServers": {
+       "telegram-delegate": {
+         "command": "node",
+         "args": ["$PWD/src/channel/main.ts"],
+         "env": { "TD_SESSION_ID": "$SID" }
+       }
+     }
+   }
+   EOF
+   ```
+
+3. Start Claude Code in the directory the task needs, with the same session id:
+
+   ```bash
+   claude --session-id "$SID" --mcp-config /tmp/td-$SID.json \
+     --dangerously-load-development-channels server:telegram-delegate
+   ```
+
+4. Claude Code warns about loading development channels: press Enter to confirm.
+5. Paste the task: who the guest is, what to do with them, what is out of scope, and what to do when the guest sends `/stop`. Tell the agent to answer the guest only with the `reply` tool. If `canWriteFirst` was `true` and you want the agent to start the conversation, say so.
+
+The route becomes `active` when the channel server connects. To end it from your side: `curl -s -X DELETE -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8790/routes/$SID`.
+
+The session runs with your permissions in that directory; the guest only approves the tool calls Claude Code asks about. Give the guest a session whose permission mode and working directory you are comfortable with.
+
+## Development
+
+```bash
+npm install
+npm test           # vitest, Telegram and Deepgram are fakes, no network
+npm run typecheck
+```
+
+## License
+
+[MIT](LICENSE)
