@@ -62,6 +62,40 @@ To keep the service running after logout: `loginctl enable-linger $USER`.
 
 The router exits with code 1 on a bad `config.json`, without `TELEGRAM_BOT_TOKEN` or when Telegram rejects the token. Real environment variables override `.env`.
 
+## Quick start
+
+With the router running, install the command from the checkout and start a session for a guest:
+
+```bash
+npm link                     # or: npm install -g .   (puts telegram-delegate on PATH)
+telegram-delegate start --user @guest_username --task-file task.md
+```
+
+`start` creates the route, writes the session's MCP config to `~/.local/state/telegram-delegate/mcp/<sessionId>.json` and runs Claude Code in this terminal:
+
+```
+claude --session-id <uuid> -n <name> --mcp-config <file> --dangerously-load-development-channels server:telegram-delegate -- <task>
+```
+
+Claude Code warns about loading development channels: press Enter. The text of `--task-file` becomes the first prompt; without it, paste the task yourself. Tell the agent who the guest is, what to do with them, what is out of scope and what to do on `/stop`. The guest should open the bot and press Start: until the bot knows their id it cannot write to them.
+
+When Claude Code exits (including Ctrl+C or a SIGTERM/SIGHUP to the command), `start` closes the route, so the owner gets no "session ended" notice. The exit code is Claude Code's.
+
+```
+telegram-delegate start --user <@username|id> [--task-file <file>] [--name <name>] [--write-first | --no-write-first] [--dry-run]
+telegram-delegate stop (--user <@username|id> | --session-id <uuid>)
+telegram-delegate status [--all]
+```
+
+- `--name` - session name and route name, default `telegram-delegate-<username|id>`.
+- `--write-first` / `--no-write-first` - override `writeFirst` from the router config. When it is on and the bot knows the guest's id, the prompt gets a section telling the agent to write to the guest first; on a Telegram 403 the agent tells you in the terminal instead of retrying.
+- `--dry-run` - print the `POST /routes` body, the MCP config and the claude command line; nothing is created.
+- If the guest already had an open route to another session, `start` warns: the route moves to the new session and the old one is told.
+- `stop` closes the route (Claude Code keeps running, the guest gets "no session"); `status` lists open routes, `--all` with closed ones.
+- Env: `TD_ROUTER_URL` (default `http://127.0.0.1:<port from config.json>`), `TD_TOKEN_FILE`, `TD_CLAUDE` (claude binary, default `claude` from PATH).
+
+The session runs with your permissions in the current directory; the guest only approves the tool calls Claude Code asks about. Start it in a directory and permission mode you are comfortable with.
+
 ## Configuration
 
 `~/.config/telegram-delegate/config.json`:
@@ -133,9 +167,9 @@ Incoming messages arrive as `<channel source="telegram-delegate" user="..." user
 
 Tool permission prompts of the session go to the guest as buttons; the guest can also answer `y <id>` / `n <id>` as text. When Claude Code closes stdin, the channel server exits; without `/stop` the router marks the route `lost` after `lostGraceSec` and tells the owner.
 
-## Start a delegated session by hand
+## Without the CLI
 
-You need the router running and the guest's Telegram username or numeric id. The guest should open the bot and press Start: until the bot knows their id it cannot write to them.
+What `telegram-delegate start` does, by hand. You need the router running and the guest's Telegram username or numeric id. The guest should open the bot and press Start: until the bot knows their id it cannot write to them.
 
 1. Pick a session id and create the route:
 
@@ -175,9 +209,7 @@ You need the router running and the guest's Telegram username or numeric id. The
 4. Claude Code warns about loading development channels: press Enter to confirm.
 5. Paste the task: who the guest is, what to do with them, what is out of scope, and what to do when the guest sends `/stop`. Tell the agent to answer the guest only with the `reply` tool. If `canWriteFirst` was `true` and you want the agent to start the conversation, say so.
 
-The route becomes `active` when the channel server connects. To end it from your side: `curl -s -X DELETE -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8790/routes/$SID`.
-
-The session runs with your permissions in that directory; the guest only approves the tool calls Claude Code asks about. Give the guest a session whose permission mode and working directory you are comfortable with.
+The route becomes `active` when the channel server connects. Close it when you are done, also after Claude Code exits, otherwise the router marks it `lost` and notifies the owner: `curl -s -X DELETE -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8790/routes/$SID`.
 
 ## Development
 
