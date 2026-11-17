@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// telegram-delegate CLI: start a delegated Claude Code session for a Telegram guest in this terminal, stop it, list routes.
+// telegram-cc-delegate CLI: start a delegated Claude Code session for a Telegram guest in this terminal, stop it, list routes.
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -12,15 +12,15 @@ import { CliError, createAdminApi, type AdminApi } from './api.ts'
 import { claudeArgvOf, defaultName, guestLabelOf, guestOf, mcpConfigOf, promptOf, sameGuest, writeFirstOf } from './plan.ts'
 
 const USAGE = `usage:
-  telegram-delegate start --user <@username|id> [--task-file <file>] [--name <name>] [--write-first | --no-write-first] [--dry-run]
-  telegram-delegate stop (--user <@username|id> | --session-id <uuid>)
-  telegram-delegate status [--all]
+  telegram-cc-delegate start --user <@username|id> [--task-file <file>] [--name <name>] [--write-first | --no-write-first] [--dry-run]
+  telegram-cc-delegate stop (--user <@username|id> | --session-id <uuid>)
+  telegram-cc-delegate status [--all]
 
 start runs Claude Code in this terminal with the telegram-delegate channel bound to the guest
 and closes the route when Claude Code exits. Env: TD_ROUTER_URL, TD_TOKEN_FILE, TD_CLAUDE (claude binary).`
 
 const env = process.env
-const say = (s: string) => process.stderr.write(`telegram-delegate: ${s}\n`)
+const say = (s: string) => process.stderr.write(`telegram-cc-delegate: ${s}\n`)
 const out = (s: string) => process.stdout.write(`${s}\n`)
 
 class UsageError extends Error {}
@@ -105,7 +105,7 @@ async function start(args: string[]): Promise<number> {
       if (r.status !== 200) say(`could not close route ${sessionId}: DELETE ${r.status} ${r.data.error ?? ''}`.trim())
       else say(`route ${sessionId} closed`)
     } catch (e) {
-      say(`could not close route ${sessionId}: ${e instanceof Error ? e.message : e}; run "telegram-delegate stop --session-id ${sessionId}"`)
+      say(`could not close route ${sessionId}: ${e instanceof Error ? e.message : e}; run "telegram-cc-delegate stop --session-id ${sessionId}"`)
     }
   }
   if (stopSignal) {

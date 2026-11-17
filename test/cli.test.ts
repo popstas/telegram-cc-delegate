@@ -104,7 +104,7 @@ describe('cli plan', () => {
   })
 })
 
-describe('telegram-delegate start', () => {
+describe('telegram-cc-delegate start', () => {
   it('creates the route, runs claude with the MCP config and closes the route on exit', async () => {
     const t = await setup()
     writeFileSync(join(t.root, 'task.md'), 'Review the report with the guest.\n')
@@ -226,7 +226,7 @@ describe('telegram-delegate start', () => {
   })
 })
 
-describe('telegram-delegate start: no lost notice', () => {
+describe('telegram-cc-delegate start: no lost notice', () => {
   it('an active session that ends with claude is closed, not lost', async () => {
     const t = await setup({ lostGraceMs: 300 })
     const r = await t.run(['start', '--user', '@liveguest'], { env: { FAKE_MODE: 'connect' } })
@@ -251,7 +251,7 @@ describe('telegram-delegate start: no lost notice', () => {
   })
 })
 
-describe('telegram-delegate stop and status', () => {
+describe('telegram-cc-delegate stop and status', () => {
   it('status lists open routes, stop closes them by user or session id', async () => {
     const t = await setup()
     t.store.upsert({ sessionId: 'a', sessionName: 'task-a', headId: '', tgUsername: 'guest_a' }, 0)

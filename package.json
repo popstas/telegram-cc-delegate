@@ -1,11 +1,12 @@
 {
-  "name": "telegram-delegate",
+  "name": "telegram-cc-delegate",
   "version": "0.1.0",
   "private": true,
   "description": "Telegram router and Claude Code channel server: a guest talks to a delegated Claude Code session",
   "license": "MIT",
   "type": "module",
   "bin": {
+    "telegram-cc-delegate": "src/cli/main.ts",
     "telegram-delegate": "src/cli/main.ts"
   },
   "engines": {

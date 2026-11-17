@@ -1,8 +1,10 @@
-# telegram-delegate
+# telegram-cc-delegate
 
 Let someone talk to a [Claude Code](https://claude.com/claude-code) session directly in Telegram.
 
 You start a Claude Code session for a task and hand it to a person (the "guest"). The guest writes to your Telegram bot in a private chat; their messages, files and voice messages arrive in that session, and the agent answers them in Telegram. Each session is bound to one guest: everyone else gets "There is no active session for you right now."
+
+The package and the CLI are `telegram-cc-delegate` (`telegram-delegate` stays as an alias); runtime names keep the short form: the MCP server and channel `telegram-delegate`, `~/.config/telegram-delegate`, `~/.local/state/telegram-delegate`, the systemd unit `telegram-delegate`.
 
 It is built on Claude Code Channels and has two parts:
 
@@ -33,8 +35,8 @@ What the router does besides routing:
 ## Install the router
 
 ```bash
-git clone <this repo> telegram-delegate
-cd telegram-delegate
+git clone https://github.com/popstas/telegram-cc-delegate.git
+cd telegram-cc-delegate
 npm install
 deploy/install.sh
 ```
@@ -67,8 +69,8 @@ The router exits with code 1 on a bad `config.json`, without `TELEGRAM_BOT_TOKEN
 With the router running, install the command from the checkout and start a session for a guest:
 
 ```bash
-npm link                     # or: npm install -g .   (puts telegram-delegate on PATH)
-telegram-delegate start --user @guest_username --task-file task.md
+npm link                     # or: npm install -g .   (puts telegram-cc-delegate on PATH)
+telegram-cc-delegate start --user @guest_username --task-file task.md
 ```
 
 `start` creates the route, writes the session's MCP config to `~/.local/state/telegram-delegate/mcp/<sessionId>.json` and runs Claude Code in this terminal:
@@ -82,9 +84,9 @@ Claude Code warns about loading development channels: press Enter. The text of `
 When Claude Code exits (including Ctrl+C or a SIGTERM/SIGHUP to the command), `start` closes the route, so the owner gets no "session ended" notice. The exit code is Claude Code's.
 
 ```
-telegram-delegate start --user <@username|id> [--task-file <file>] [--name <name>] [--write-first | --no-write-first] [--dry-run]
-telegram-delegate stop (--user <@username|id> | --session-id <uuid>)
-telegram-delegate status [--all]
+telegram-cc-delegate start --user <@username|id> [--task-file <file>] [--name <name>] [--write-first | --no-write-first] [--dry-run]
+telegram-cc-delegate stop (--user <@username|id> | --session-id <uuid>)
+telegram-cc-delegate status [--all]
 ```
 
 - `--name` - session name and route name, default `telegram-delegate-<username|id>`.
@@ -169,7 +171,7 @@ Tool permission prompts of the session go to the guest as buttons; the guest can
 
 ## Without the CLI
 
-What `telegram-delegate start` does, by hand. You need the router running and the guest's Telegram username or numeric id. The guest should open the bot and press Start: until the bot knows their id it cannot write to them.
+What `telegram-cc-delegate start` does, by hand. You need the router running and the guest's Telegram username or numeric id. The guest should open the bot and press Start: until the bot knows their id it cannot write to them.
 
 1. Pick a session id and create the route:
 
