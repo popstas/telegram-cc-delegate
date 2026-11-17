@@ -1,3 +1,4 @@
+# Template: deploy/install.sh replaces @NODE@ and @APP_DIR@ and installs it to ~/.config/systemd/user.
 [Unit]
 Description=telegram-delegate router (Telegram bot <-> Claude Code channel sessions)
 After=network-online.target
@@ -5,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/env node %h/projects/js/telegram-delegate/src/router/main.ts
-WorkingDirectory=%h/projects/js/telegram-delegate
+ExecStart=@NODE@ @APP_DIR@/src/router/main.ts
+WorkingDirectory=@APP_DIR@
 Restart=on-failure
 RestartSec=5
 
