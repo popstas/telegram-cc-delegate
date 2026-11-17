@@ -59,3 +59,15 @@ journalctl --user -u telegram-delegate -n 20   # "polling as @<бот>"
 | `POST /sessions/:id/permission` | `{ request_id, tool_name, description, input_preview }` -> кнопки гостю |
 
 Обрыв подписки active-маршрута дольше `lostGraceSec` -> `lost` и сообщение админу.
+
+## Канал-сервер
+
+Запускает Claude Code в сессии-ребёнке через `--mcp-config` (файл пишет скилл telegram-delegate) и `--dangerously-load-development-channels server:telegram-delegate`.
+
+| Переменная | Умолчание | |
+|---|---|---|
+| `TD_SESSION_ID` | - (обязательна, uuid) | sessionId сессии, совпадает с маршрутом |
+| `TD_ROUTER_URL` | `http://127.0.0.1:8790` | |
+| `TD_TOKEN_FILE` | `~/.config/telegram-delegate/api-token` | |
+
+Инструменты агента: `reply { text, files?, reply_to? }`, `edit_message { message_id, text }`. Подтверждения инструментов (`claude/channel/permission`) уходят гостю кнопками, нажать может только гость маршрута. Закрытый stdin -> выход 0, роутер через `lostGraceSec` помечает маршрут `lost`, если не было stop.
