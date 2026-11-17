@@ -2,6 +2,7 @@ import { statSync } from 'node:fs'
 import { basename, extname, isAbsolute } from 'node:path'
 import { InputFile } from 'grammy'
 import type { RouteStore } from '../routes.ts'
+import { errInfo, log } from '../log.ts'
 import { T } from '../texts.ts'
 import { chunk } from './chunk.ts'
 import type { Hub } from './hub.ts'
@@ -26,7 +27,7 @@ export type Telegram = Outbound & {
   /** Caches the bot username (getMe). */
   init(): Promise<void>
   onMessage(msg: IncomingMessage): Promise<void>
-  onCallback(q: { id: string; from: { id: number }; data: string }, answer: (text?: string) => Promise<void>): Promise<void>
+  onCallback(q: { id: string; from: { id: number; username?: string }; data: string }, answer: (text?: string) => Promise<void>): Promise<void>
 }
 
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
@@ -47,9 +48,21 @@ interface Pending {
   messageId?: number
 }
 
-function log(msg: string): void {
-  process.stderr.write(`telegram-delegate telegram: ${msg}\n`)
+/** Content kind for the routing log. The content itself is never logged. */
+export function contentType(msg: IncomingMessage): string {
+  if (msg.voice) return 'voice'
+  if (msg.audio) return 'audio'
+  if (msg.video_note) return 'video_note'
+  if (msg.photo?.length) return 'photo'
+  if (msg.document) return 'document'
+  if (msg.text != null) return 'text'
+  const m = msg as unknown as Record<string, unknown>
+  return OTHER_TYPES.find(k => m[k] != null) ?? 'other'
 }
+const OTHER_TYPES = ['sticker', 'video', 'animation', 'location', 'venue', 'contact', 'poll', 'dice', 'story']
+
+const who = (id: number | string, username?: string) => `from=${id}${username ? ` @${username}` : ''}`
+const where = (r: { sessionName: string; sessionId: string }) => `${r.sessionName} (${r.sessionId})`
 
 function keyboard(id: string, withMore: boolean) {
   const row = [
@@ -74,12 +87,14 @@ export function createTelegram(deps: {
   let username = ''
 
   /** Active route: deliver now, or keep for the reconnecting channel server (router restart, grace window). */
-  const deliver = (sessionId: string, ev: SessionEvent) => {
-    if (!hub.send(sessionId, ev)) hub.enqueue(sessionId, ev)
+  const deliver = (sessionId: string, ev: SessionEvent): boolean => {
+    if (hub.send(sessionId, ev)) return true
+    hub.enqueue(sessionId, ev)
+    return false
   }
 
   const say = (chatId: string, text: string) =>
-    bot.api.sendMessage(chatId, text).catch(e => log(`sendMessage to ${chatId} failed: ${e}`))
+    bot.api.sendMessage(chatId, text).catch(e => log(`out service-text to ${chatId} failed ${errInfo(e)}`))
 
   async function sendText(userId: string, text: string, replyTo?: string): Promise<string[]> {
     const ids: string[] = []
@@ -124,29 +139,50 @@ export function createTelegram(deps: {
     const text = `Подтвердить: ${req.tool_name.slice(0, 200)} - ${req.description.slice(0, DESCRIPTION_MAX)}`
     const p: Pending = { sessionId, userId, req, text }
     pending.set(req.request_id, p)
-    const sent = await bot.api.sendMessage(userId, text, { reply_markup: keyboard(req.request_id, true) })
-    p.messageId = sent.message_id
+    try {
+      const sent = await bot.api.sendMessage(userId, text, { reply_markup: keyboard(req.request_id, true) })
+      p.messageId = sent.message_id
+      log(`out permission ${sessionId} ${req.request_id} ok`)
+    } catch (e) {
+      log(`out permission ${sessionId} ${req.request_id} failed ${errInfo(e)}`)
+      throw e
+    }
   }
 
   /** Removes the buttons and shows the verdict on the request message. */
   function closeRequestMessage(p: Pending, label: string): void {
     if (p.messageId == null) return
-    bot.api.editMessageText(p.userId, p.messageId, `${p.text}\n\n${label}`).catch(e => log(`edit permission message failed: ${e}`))
+    bot.api.editMessageText(p.userId, p.messageId, `${p.text}\n\n${label}`).catch(e => log(`out permission-close ${p.sessionId} failed ${errInfo(e)}`))
   }
 
   async function onMessage(msg: IncomingMessage): Promise<void> {
-    if (msg.chat.type !== 'private' || !msg.from || msg.from.is_bot) return
+    if (!msg.from) return
+    const len = (msg.text ?? msg.caption ?? '').length
+    const head = `in msg ${who(msg.from.id, msg.from.username)} chat=${msg.chat.type} type=${contentType(msg)} len=${len}`
+    const note = (decision: string) => log(`${head} ${decision}`)
+    if (msg.chat.type !== 'private') return note('ignored-group')
+    if (msg.from.is_bot) return note('ignored-bot')
     const userId = String(msg.from.id)
     const route = store.matchSender({ id: userId, username: msg.from.username })
-    if (!route || route.status === 'closed') return void await say(userId, T.noSession)
-    if (route.status === 'pending') return void await say(userId, T.pending)
-    if (route.status === 'lost') return void await say(userId, T.lost)
+    if (!route || route.status === 'closed') {
+      note('no-session')
+      return void await say(userId, T.noSession)
+    }
+    if (route.status === 'pending') {
+      note(`pending ${where(route)}`)
+      return void await say(userId, T.pending)
+    }
+    if (route.status === 'lost') {
+      note(`lost ${where(route)}`)
+      return void await say(userId, T.lost)
+    }
     const sessionId = route.sessionId
 
     if (msg.text && STOP_RE.test(msg.text)) {
       store.setStatus(sessionId, 'closed')
       for (const [id, p] of pending) if (p.sessionId === sessionId) pending.delete(id)
       deliver(sessionId, { type: 'message', content: T.stopToSession, meta: { kind: 'stop' } })
+      note(`stop ${where(route)}`)
       return void await say(userId, T.stopped)
     }
 
@@ -156,7 +192,8 @@ export function createTelegram(deps: {
       const p = pending.get(request_id)
       if (p && p.sessionId === sessionId && p.userId === userId) {
         const behavior = perm[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny'
-        deliver(sessionId, { type: 'permission', request_id, behavior })
+        const sent = deliver(sessionId, { type: 'permission', request_id, behavior })
+        note(`verdict ${request_id} ${behavior}${sent ? '' : ' queued'} ${where(route)}`)
         pending.delete(request_id)
         closeRequestMessage(p, LABEL[behavior])
         return
@@ -168,7 +205,7 @@ export function createTelegram(deps: {
     try {
       extra = await media.toEvent(msg, sessionId)
     } catch (e) {
-      log(`media for ${sessionId} failed: ${e}`)
+      log(`media ${sessionId} failed ${errInfo(e)}`)
       extra = { content: msg.caption ?? '', meta: { media_error: String(e instanceof Error ? e.message : e) } }
     }
     let content = extra ? extra.content : (msg.text ?? msg.caption ?? '')
@@ -184,34 +221,52 @@ export function createTelegram(deps: {
     }
     // The route may have been closed or moved while media was downloading.
     const current = store.get(sessionId)
-    if (!current || current.status !== 'active') return void await say(userId, current?.status === 'lost' ? T.lost : T.noSession)
-    deliver(sessionId, { type: 'message', content, meta })
+    if (!current || current.status !== 'active') {
+      const lost = current?.status === 'lost'
+      note(`${lost ? 'lost' : 'no-session'} ${where(route)} (after media)`)
+      return void await say(userId, lost ? T.lost : T.noSession)
+    }
+    const sent = deliver(sessionId, { type: 'message', content, meta })
+    note(`${sent ? '->' : 'queued'} ${where(route)}`)
     store.touch(sessionId, now())
   }
 
-  async function onCallback(q: { id: string; from: { id: number }; data: string }, answer: (text?: string) => Promise<void>): Promise<void> {
+  async function onCallback(q: { id: string; from: { id: number; username?: string }; data: string }, answer: (text?: string) => Promise<void>): Promise<void> {
+    const note = (decision: string) => log(`in cb ${who(q.from.id, q.from.username)} ${q.data.slice(0, 64).replace(/\s+/g, '_')} ${decision}`)
     const m = CALLBACK_RE.exec(q.data)
-    if (!m) return answer()
+    if (!m) {
+      note('ignored')
+      return answer()
+    }
     const action = m[1] as 'allow' | 'deny' | 'more'
     const request_id = m[2]!
     const p = pending.get(request_id)
-    if (!p) return answer(T.stale)
-    if (String(q.from.id) !== p.userId) return answer(T.notAuthorized)
+    if (!p) {
+      note('stale')
+      return answer(T.stale)
+    }
+    if (String(q.from.id) !== p.userId) {
+      note('not-authorized')
+      return answer(T.notAuthorized)
+    }
     const route = store.get(p.sessionId)
     // A lost or closed session cannot use the verdict: its request ids died with it.
     if (!route || route.status !== 'active') {
       pending.delete(request_id)
+      note(`stale ${route ? where(route) : p.sessionId}`)
       return answer(T.stale)
     }
     if (action === 'more') {
+      note(`more ${where(route)}`)
       const preview = p.req.input_preview.slice(0, PREVIEW_MAX)
       const text = `${p.text}\n\n${preview}`.slice(0, TEXT_MAX)
       if (p.messageId != null) {
-        await bot.api.editMessageText(p.userId, p.messageId, text, { reply_markup: keyboard(request_id, false) }).catch(e => log(`edit more failed: ${e}`))
+        await bot.api.editMessageText(p.userId, p.messageId, text, { reply_markup: keyboard(request_id, false) }).catch(e => log(`out permission-more ${p.sessionId} failed ${errInfo(e)}`))
       }
       return answer()
     }
-    deliver(p.sessionId, { type: 'permission', request_id, behavior: action })
+    const sent = deliver(p.sessionId, { type: 'permission', request_id, behavior: action })
+    note(`verdict ${request_id} ${action}${sent ? '' : ' queued'} ${where(route)}`)
     pending.delete(request_id)
     closeRequestMessage(p, LABEL[action])
     return answer(LABEL[action])

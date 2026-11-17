@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 import type { Route, RouteStore } from '../routes.ts'
+import { errInfo, log } from '../log.ts'
 import { A, T } from '../texts.ts'
 import { assertSendable } from './files.ts'
 import type { Hub } from './hub.ts'
@@ -79,9 +80,6 @@ function parse<T>(schema: z.ZodType<T>, data: unknown): T {
   return r.data
 }
 
-function log(msg: string): void {
-  process.stderr.write(`telegram-delegate api: ${msg}\n`)
-}
 
 export function createApi(deps: {
   store: RouteStore
@@ -97,8 +95,12 @@ export function createApi(deps: {
   const now = deps.now ?? Date.now
   const lostTimers = new Map<string, NodeJS.Timeout>()
 
-  const notifyAdmin = (text: string) => {
-    out.notifyAdmin(text).catch(e => log(`notifyAdmin failed: ${e}`))
+  /** kind/subject go to the log, the text only to the admin. */
+  const notifyAdmin = (kind: string, subject: string, text: string) => {
+    out.notifyAdmin(text).then(
+      () => log(`admin ${kind} ${subject} ok`),
+      e => log(`admin ${kind} ${subject} failed ${errInfo(e)}`),
+    )
   }
 
   const clearLost = (sessionId: string) => {
@@ -115,10 +117,10 @@ export function createApi(deps: {
       if (!r || r.status !== 'active' || hub.connected(sessionId)) return
       store.setStatus(sessionId, 'lost')
       log(`session ${sessionId} lost`)
-      notifyAdmin(A.lost(r))
+      notifyAdmin('lost', sessionId, A.lost(r))
       // Guest messages queued for the reconnect will never arrive: say so instead of silence.
       if (hub.dropQueue(sessionId) > 0 && r.tgUserId) {
-        out.sendText(r.tgUserId, T.lost).catch(e => log(`sendText lost to guest failed: ${e}`))
+        out.sendText(r.tgUserId, T.lost).catch(e => log(`out lost-notice ${sessionId} failed ${errInfo(e)}`))
       }
     }, lostGraceMs)
     t.unref()
@@ -130,11 +132,12 @@ export function createApi(deps: {
     clearLost(from.sessionId)
     hub.dropQueue(from.sessionId)
     hub.send(from.sessionId, { type: 'message', content: T.movedToSession, meta: { kind: 'moved' } })
-    notifyAdmin(A.moved(from, to))
+    notifyAdmin('moved', `${from.sessionId} -> ${to.sessionId}`, A.moved(from, to))
   }
   store.onMoved(handleMoved)
 
   hub.onDetach(sessionId => {
+    log(`session ${sessionId} disconnected`)
     if (store.get(sessionId)?.status === 'active') scheduleLost(sessionId)
   })
   // Router restart: active routes get the grace period to reconnect.
@@ -151,10 +154,12 @@ export function createApi(deps: {
     return r as Route & { tgUserId: string }
   }
 
-  const outbound = async <R>(fn: () => Promise<R>): Promise<R> => {
+  /** Telegram call on behalf of a session: failures are logged with the Telegram code and become 502. */
+  const outbound = async <R>(label: string | null, fn: () => Promise<R>): Promise<R> => {
     try {
       return await fn()
     } catch (e) {
+      if (label) log(`out ${label} failed ${errInfo(e)}`)
       throw new HttpError(502, e instanceof Error ? e.message : String(e))
     }
   }
@@ -193,6 +198,7 @@ export function createApi(deps: {
         clearLost(id)
         if (r.status !== 'active') store.setStatus(id, 'active')
         hub.attach(id, res)
+        log(`session ${id} connected`)
         return
       }
       if (action === 'reply' && method === 'POST') {
@@ -207,21 +213,22 @@ export function createApi(deps: {
             }
           }
         }
-        const ids: string[] = []
-        if (body.text) ids.push(...await outbound(() => out.sendText(r.tgUserId, body.text, body.reply_to)))
-        if (body.files?.length) ids.push(...await outbound(() => out.sendFiles(r.tgUserId, body.files!)))
-        return send(res, 200, { message_ids: ids })
+        const textIds = body.text ? await outbound(`reply ${id}`, () => out.sendText(r.tgUserId, body.text, body.reply_to)) : []
+        const fileIds = body.files?.length ? await outbound(`reply ${id}`, () => out.sendFiles(r.tgUserId, body.files!)) : []
+        log(`out reply ${id} chunks=${textIds.length} files=${fileIds.length} ok`)
+        return send(res, 200, { message_ids: [...textIds, ...fileIds] })
       }
       if (action === 'edit' && method === 'POST') {
         const body = parse(editBody, await readJson(req))
         const r = guestRoute(id)
-        await outbound(() => out.editText(r.tgUserId, body.message_id, body.text))
+        await outbound(`edit ${id}`, () => out.editText(r.tgUserId, body.message_id, body.text))
+        log(`out edit ${id} ok`)
         return send(res, 200, { ok: true })
       }
       if (action === 'permission' && method === 'POST') {
         const body = parse(permissionBody, await readJson(req))
         const r = guestRoute(id)
-        await outbound(() => out.askPermission(r.tgUserId, id, body))
+        await outbound(null, () => out.askPermission(r.tgUserId, id, body))
         return send(res, 202, { ok: true })
       }
     }
@@ -231,7 +238,9 @@ export function createApi(deps: {
   const server = http.createServer((req, res) => {
     handle(req, res).catch(e => {
       const status = e instanceof HttpError ? e.status : 500
-      if (status === 500) log(`${req.method} ${req.url}: ${e}`)
+      // Status only: 4xx messages can carry file names. 502 was logged with its Telegram code already.
+      if (status === 500) log(`api ${req.method} ${(req.url ?? '').split('?')[0]} 500 ${errInfo(e)}`)
+      else if (status !== 502 && status !== 401) log(`api ${req.method} ${(req.url ?? '').split('?')[0]} ${status}`)
       if (!res.headersSent) send(res, status, { error: e instanceof Error ? e.message : String(e) })
       else res.end()
     })

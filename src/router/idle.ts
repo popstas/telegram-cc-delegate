@@ -1,4 +1,5 @@
 import type { RouteStore } from '../routes.ts'
+import { errInfo, log } from '../log.ts'
 import { A } from '../texts.ts'
 import type { Outbound } from './types.ts'
 
@@ -6,7 +7,13 @@ import type { Outbound } from './types.ts'
 export async function checkIdle(store: RouteStore, out: Outbound, now: number, idleHours: number): Promise<number> {
   let n = 0
   for (const r of store.idleCandidates(now, idleHours * 3600_000)) {
-    await out.notifyAdmin(A.idle(r, idleHours))
+    try {
+      await out.notifyAdmin(A.idle(r, idleHours))
+    } catch (e) {
+      log(`admin idle ${r.sessionId} failed ${errInfo(e)}`)
+      continue
+    }
+    log(`admin idle ${r.sessionId} ok`)
     store.markIdleNotified(r.sessionId, now)
     n++
   }

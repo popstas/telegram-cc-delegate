@@ -3,6 +3,7 @@
 import { basename, join } from 'node:path'
 import { Bot, GrammyError } from 'grammy'
 import { ensureApiToken, loadConfig } from '../config.ts'
+import { log, setLogSink } from '../log.ts'
 import { RouteStore } from '../routes.ts'
 import { createApi } from './api.ts'
 import { Hub } from './hub.ts'
@@ -14,9 +15,6 @@ import { createTelegram, type BotLike } from './telegram.ts'
 const IDLE_CHECK_MS = 10 * 60_000
 const DOWNLOAD_TIMEOUT_MS = 60_000
 
-function log(msg: string): void {
-  process.stderr.write(`telegram-delegate: ${msg}\n`)
-}
 
 const cfg = loadConfig()
 if (!cfg.botToken) {
@@ -26,6 +24,7 @@ if (!cfg.botToken) {
 const botToken = cfg.botToken
 /** Never let the bot token reach a log line. */
 const scrub = (s: unknown) => String(s).split(botToken).join('***')
+setLogSink(line => { process.stderr.write(`telegram-delegate: ${scrub(line)}\n`) })
 
 const apiToken = ensureApiToken(cfg.configDir)
 const store = new RouteStore(join(cfg.stateDir, 'routes.json'))
