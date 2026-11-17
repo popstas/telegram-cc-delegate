@@ -167,7 +167,7 @@
   2. `matchSender` → нет маршрута или `closed` → `Для вас сейчас нет активной сессии.`; `pending` → `Сессия запускается, напишите через минуту.`; `lost` → `Сессия прервалась, Стас в курсе.`
   3. Текст `/stop` → `setStatus(closed)`, гостю `Сессия завершена.`, в сессию `{ type: 'message', content: 'Гость завершил сессию командой /stop.', meta: { kind: 'stop' } }`.
   4. Текст по `/^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i` при открытом запросе этого маршрута → `{ type: 'permission', ... }` вместо сообщения.
-  5. Иначе: событие `{ type: 'message', content, meta: { chat_id, message_id, user, user_id, ts, kind: 'guest' } }` (+ поля от `media`), `touch`, индикатор набора; `hub.send` вернул false → гостю `Сессия прервалась, Стас в курсе.`
+  5. Иначе: событие `{ type: 'message', content, meta: { chat_id, message_id, user, user_id, ts, kind: 'guest' } }` (+ поля от `media`), `touch`, индикатор набора; `hub.send` вернул false (active-маршрут без подписки: рестарт роутера, грейс) → событие в очередь хаба `hub.enqueue`, уходит при переподключении; маршрут стал `lost` → очередь сбрасывается, гостю `Сессия прервалась, Стас в курсе.` (решение 17.11, ab71c24)
   `askPermission`: кнопки `perm:allow:<id>`, `perm:deny:<id>`, `perm:more:<id>`; текст `Подтвердить: <tool_name> - <description>`; запрос хранится в памяти `request_id → { sessionId, userId, req }`. `onCallback`: нажал не `userId` запроса → `Not authorized.`; запроса нет → `Запрос устарел.`; `more` → показать `input_preview` (обрезать до 3500); allow/deny → событие в сессию, кнопки убрать, запрос удалить.
 
 - [ ] **Step 1: Write the failing tests:**
