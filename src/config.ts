@@ -2,9 +2,13 @@ import { randomBytes } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { DEFAULT_LANGUAGE, isLanguage, LANGUAGES, type Language } from './texts.ts'
 
 export interface Config {
+  /** Telegram numeric id of the bot owner: admin notices go there. Required. */
   adminUserId: string
+  /** Language of the bot texts for the guest and the admin; also the default for deepgram.language. */
+  language: Language
   port: number
   idleHours: number
   lostGraceSec: number
@@ -18,13 +22,13 @@ export interface Config {
 }
 
 const DEFAULTS = {
-  adminUserId: '241225329',
   port: 8790,
   idleHours: 24,
   lostGraceSec: 60,
-  deepgram: { language: 'ru' },
   writeFirst: false,
 }
+
+type FileConfig = Partial<Omit<Config, 'deepgram'>> & { deepgram?: Partial<Config['deepgram']> }
 
 export function configDirFrom(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.HOME || homedir()
@@ -51,21 +55,37 @@ export function parseEnv(text: string): Record<string, string> {
   return out
 }
 
-/** config.json + .env from the config dir; real environment variables win over .env. */
+/** config.json + .env from the config dir; real environment variables win over .env. Throws on a bad config.json. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const configDir = configDirFrom(env)
   const stateDir = stateDirFrom(env)
   const cfgFile = join(configDir, 'config.json')
-  const file = existsSync(cfgFile) ? (JSON.parse(readFileSync(cfgFile, 'utf8')) as Partial<Config>) : {}
+  let file: FileConfig = {}
+  if (existsSync(cfgFile)) {
+    try {
+      file = JSON.parse(readFileSync(cfgFile, 'utf8')) as FileConfig
+    } catch (e) {
+      throw new Error(`config ${cfgFile}: invalid JSON (${e instanceof Error ? e.message : e})`)
+    }
+  }
+  const adminUserId = file.adminUserId == null ? '' : String(file.adminUserId).trim()
+  if (!/^\d+$/.test(adminUserId)) {
+    throw new Error(`config ${cfgFile}: "adminUserId" is required, set it to your numeric Telegram user id (for example "123456789")`)
+  }
+  const language = file.language ?? DEFAULT_LANGUAGE
+  if (!isLanguage(language)) {
+    throw new Error(`config ${cfgFile}: unknown "language" ${JSON.stringify(language)}, expected one of: ${LANGUAGES.join(', ')}`)
+  }
   const envFile = join(configDir, '.env')
   const dotenv = existsSync(envFile) ? parseEnv(readFileSync(envFile, 'utf8')) : {}
   const pick = (k: string): string | undefined => env[k] || dotenv[k] || undefined
   return {
-    adminUserId: String(file.adminUserId ?? DEFAULTS.adminUserId),
+    adminUserId,
+    language,
     port: Number(file.port ?? DEFAULTS.port),
     idleHours: Number(file.idleHours ?? DEFAULTS.idleHours),
     lostGraceSec: Number(file.lostGraceSec ?? DEFAULTS.lostGraceSec),
-    deepgram: { ...DEFAULTS.deepgram, ...(file.deepgram ?? {}) },
+    deepgram: { ...file.deepgram, language: file.deepgram?.language || language },
     writeFirst: file.writeFirst === true,
     botToken: pick('TELEGRAM_BOT_TOKEN'),
     deepgramKey: pick('DEEPGRAM_API_KEY'),

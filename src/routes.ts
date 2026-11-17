@@ -23,7 +23,7 @@ export interface RouteInput {
   tgUserId?: string
 }
 
-/** "@AlexiaPost" -> "alexiapost" */
+/** "@GuestUser" -> "guestuser" */
 export function normUsername(u: string | undefined): string | undefined {
   if (u == null) return undefined
   const s = u.trim().replace(/^@/, '').toLowerCase()

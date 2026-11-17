@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { createTelegram, type BotLike, type MediaHandler } from '../src/router/telegram.ts'
 import type { IncomingMessage, SessionEvent } from '../src/router/types.ts'
 import { RouteStore } from '../src/routes.ts'
+import { TEXTS, type Texts } from '../src/texts.ts'
 
 type Call = { fn: string; args: unknown[] }
 
@@ -42,13 +43,13 @@ function fakeHub(connected = true) {
 
 const noMedia: MediaHandler = { toEvent: async () => undefined }
 
-function setup(opts: { hubConnected?: boolean; media?: MediaHandler; status?: 'pending' | 'active' | 'lost' | 'closed' } = {}) {
+function setup(opts: { hubConnected?: boolean; media?: MediaHandler; status?: 'pending' | 'active' | 'lost' | 'closed'; texts?: Texts } = {}) {
   const store = new RouteStore(join(mkdtempSync(join(tmpdir(), 'td-tg-')), 'routes.json'))
-  store.upsert({ sessionId: 's1', sessionName: 'guest-task', headId: 'head', tgUsername: 'alexiapost' }, 0)
+  store.upsert({ sessionId: 's1', sessionName: 'guest-task', headId: 'head', tgUsername: 'guestuser' }, 0)
   store.setStatus('s1', opts.status ?? 'active')
   const bot = fakeBot()
   const hub = fakeHub(opts.hubConnected ?? true)
-  const tg = createTelegram({ bot, store, hub, media: opts.media ?? noMedia, adminUserId: '241225329', now: () => 5000 })
+  const tg = createTelegram({ bot, store, hub, media: opts.media ?? noMedia, adminUserId: '1001', now: () => 5000, ...(opts.texts && { texts: opts.texts }) })
   return { store, bot, hub, tg }
 }
 
@@ -58,7 +59,7 @@ function msg(text: string, o: { id?: number; username?: string; chatType?: strin
     message_id: 7,
     date: 1_700_000_000,
     chat: { id: o.chatType && o.chatType !== 'private' ? -100 : id, type: o.chatType ?? 'private' },
-    from: { id, username: o.username ?? 'alexiapost', first_name: 'Alexia' },
+    from: { id, username: o.username ?? 'guestuser', first_name: 'Guest' },
     text,
   }
 }
@@ -78,17 +79,17 @@ describe('telegram side', () => {
   it('stranger gets no-session text', async () => {
     const { tg, bot, hub } = setup()
     await tg.onMessage(msg('hi', { id: 999, username: 'stranger' }))
-    expect(sentTexts(bot)).toEqual([['999', 'Для вас сейчас нет активной сессии.']])
+    expect(sentTexts(bot)).toEqual([['999', 'There is no active session for you right now.']])
     expect(hub.sent).toEqual([])
   })
 
   it('pending and lost texts', async () => {
     const p = setup({ status: 'pending' })
     await p.tg.onMessage(msg('hi'))
-    expect(sentTexts(p.bot)).toEqual([['42', 'Сессия запускается, напишите через минуту.']])
+    expect(sentTexts(p.bot)).toEqual([['42', 'The session is starting, please write again in a minute.']])
     const l = setup({ status: 'lost' })
     await l.tg.onMessage(msg('hi'))
-    expect(sentTexts(l.bot)).toEqual([['42', 'Сессия прервалась, Стас в курсе.']])
+    expect(sentTexts(l.bot)).toEqual([['42', 'The session was interrupted, the bot owner has been notified.']])
     expect(p.hub.sent).toEqual([])
     expect(l.hub.sent).toEqual([])
   })
@@ -96,7 +97,7 @@ describe('telegram side', () => {
   it('closed route gets no-session text', async () => {
     const { tg, bot } = setup({ status: 'closed' })
     await tg.onMessage(msg('hi'))
-    expect(sentTexts(bot)).toEqual([['42', 'Для вас сейчас нет активной сессии.']])
+    expect(sentTexts(bot)).toEqual([['42', 'There is no active session for you right now.']])
   })
 
   it('guest message reaches session with meta', async () => {
@@ -108,19 +109,19 @@ describe('telegram side', () => {
     expect(ev.type).toBe('message')
     if (ev.type !== 'message') return
     expect(ev.content).toBe('привет')
-    expect(ev.meta).toEqual({ chat_id: '42', message_id: '7', user: 'alexiapost', user_id: '42', ts: new Date(1_700_000_000_000).toISOString(), kind: 'guest' })
+    expect(ev.meta).toEqual({ chat_id: '42', message_id: '7', user: 'guestuser', user_id: '42', ts: new Date(1_700_000_000_000).toISOString(), kind: 'guest' })
     expect(store.get('s1')?.lastMessageAt).toBe(5000)
     expect(bot.calls.some(c => c.fn === 'sendChatAction' && c.args[0] === '42')).toBe(true)
     expect(sentTexts(bot)).toEqual([])
   })
 
   it('media fields are merged into meta', async () => {
-    const media: MediaHandler = { toEvent: async () => ({ content: '[голосовое, расшифровка] привет', meta: { audio_path: '/x/a.ogg' } }) }
+    const media: MediaHandler = { toEvent: async () => ({ content: '[voice message, transcript] привет', meta: { audio_path: '/x/a.ogg' } }) }
     const { tg, hub } = setup({ media })
     await tg.onMessage({ ...msg(''), text: undefined, voice: { file_id: 'v1' } })
     const ev = hub.sent[0]!.ev
     if (ev.type !== 'message') throw new Error('not a message')
-    expect(ev.content).toBe('[голосовое, расшифровка] привет')
+    expect(ev.content).toBe('[voice message, transcript] привет')
     expect(ev.meta.audio_path).toBe('/x/a.ogg')
     expect(ev.meta.kind).toBe('guest')
   })
@@ -147,7 +148,7 @@ describe('telegram side', () => {
     store.setStatus('s1', 'lost')
     const answers: Array<string | undefined> = []
     await tg.onCallback({ id: 'q1', from: { id: 42 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })
-    expect(answers).toEqual(['Запрос устарел.'])
+    expect(answers).toEqual(['This request has expired.'])
     expect(hub.sent).toEqual([])
     expect(hub.queued).toEqual([])
   })
@@ -160,7 +161,7 @@ describe('telegram side', () => {
     await tg.onMessage({ ...msg(''), text: undefined, document: { file_id: 'd1' } })
     expect(hub.sent).toEqual([])
     expect(hub.queued).toEqual([])
-    expect(sentTexts(bot)).toEqual([['42', 'Для вас сейчас нет активной сессии.']])
+    expect(sentTexts(bot)).toEqual([['42', 'There is no active session for you right now.']])
   })
 
   it('typing goes out before media processing', async () => {
@@ -185,8 +186,8 @@ describe('telegram side', () => {
     const { tg, bot, hub, store } = setup()
     await tg.onMessage(msg('/stop'))
     expect(store.get('s1')?.status).toBe('closed')
-    expect(sentTexts(bot)).toEqual([['42', 'Сессия завершена.']])
-    expect(hub.sent).toEqual([{ sessionId: 's1', ev: { type: 'message', content: 'Гость завершил сессию командой /stop.', meta: { kind: 'stop' } } }])
+    expect(sentTexts(bot)).toEqual([['42', 'Session closed.']])
+    expect(hub.sent).toEqual([{ sessionId: 's1', ev: { type: 'message', content: 'The guest ended the session with /stop.', meta: { kind: 'stop' } } }])
   })
 
   it('askPermission sends buttons', async () => {
@@ -194,14 +195,14 @@ describe('telegram side', () => {
     await tg.askPermission('42', 's1', req)
     const call = bot.calls.find(c => c.fn === 'sendMessage')!
     expect(call.args[0]).toBe('42')
-    expect(call.args[1]).toBe('Подтвердить: Bash - run ls')
+    expect(call.args[1]).toBe('Confirm: Bash - run ls')
     const kb = JSON.stringify(call.args[2])
     for (const d of ['perm:allow:abcde', 'perm:deny:abcde', 'perm:more:abcde']) expect(kb).toContain(d)
   })
 
   it('yes <id> becomes verdict', async () => {
     const { tg, hub, store } = setup()
-    store.matchSender({ id: '42', username: 'alexiapost' })
+    store.matchSender({ id: '42', username: 'guestuser' })
     await tg.askPermission('42', 's1', req)
     await tg.onMessage(msg('yes abcde'))
     expect(hub.sent).toEqual([{ sessionId: 's1', ev: { type: 'permission', request_id: 'abcde', behavior: 'allow' } }])
@@ -227,7 +228,7 @@ describe('telegram side', () => {
     expect(JSON.stringify(edit.args)).not.toContain('perm:')
     expect(answers).toHaveLength(1)
     await tg.onCallback({ id: 'q2', from: { id: 42 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })
-    expect(answers[1]).toBe('Запрос устарел.')
+    expect(answers[1]).toBe('This request has expired.')
     expect(hub.sent).toHaveLength(1)
   })
 
@@ -256,7 +257,7 @@ describe('telegram side', () => {
     const { tg, hub } = setup()
     const answers: Array<string | undefined> = []
     await tg.onCallback({ id: 'q1', from: { id: 42 }, data: 'perm:allow:zzzzz' }, async t => { answers.push(t) })
-    expect(answers).toEqual(['Запрос устарел.'])
+    expect(answers).toEqual(['This request has expired.'])
     expect(hub.sent).toEqual([])
   })
 
@@ -266,14 +267,14 @@ describe('telegram side', () => {
     store.setStatus('s1', 'closed')
     const answers: Array<string | undefined> = []
     await tg.onCallback({ id: 'q1', from: { id: 42 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })
-    expect(answers).toEqual(['Запрос устарел.'])
+    expect(answers).toEqual(['This request has expired.'])
     expect(hub.sent).toEqual([])
   })
 
   it('notifyAdmin sends to adminUserId', async () => {
     const { tg, bot } = setup()
     await tg.notifyAdmin('telegram-delegate: test')
-    expect(sentTexts(bot)).toEqual([['241225329', 'telegram-delegate: test']])
+    expect(sentTexts(bot)).toEqual([['1001', 'telegram-delegate: test']])
   })
 
   it('sendText chunks long text without parse_mode', async () => {
@@ -334,24 +335,24 @@ describe('telegram side', () => {
 
     it('guest press becomes kind=button message and removes buttons', async () => {
       const { tg, bot, hub, store } = setup()
-      store.matchSender({ id: '42', username: 'alexiapost' })
+      store.matchSender({ id: '42', username: 'guestuser' })
       await tg.sendText('42', 'Выберите', undefined, { sessionId: 's1', options: ['A', 'B'] })
       const data = lastMarkup(bot)!.inline_keyboard[1]![0]!.callback_data
       const answers: Array<string | undefined> = []
-      await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data }, async t => { answers.push(t) })
+      await tg.onCallback({ id: 'q', from: { id: 42, username: 'guestuser' }, data }, async t => { answers.push(t) })
       expect(hub.sent).toHaveLength(1)
       const ev = hub.sent[0]!.ev
       if (ev.type !== 'message') throw new Error('not message')
       expect(ev.content).toBe('B')
-      expect(ev.meta).toMatchObject({ kind: 'button', user_id: '42', user: 'alexiapost', chat_id: '42', message_id: '501' })
+      expect(ev.meta).toMatchObject({ kind: 'button', user_id: '42', user: 'guestuser', chat_id: '42', message_id: '501' })
       expect(ev.meta.ts).toMatch(/^\d{4}-/)
       const edit = bot.calls.find(c => c.fn === 'editMessageText')!
-      expect(edit.args.slice(0, 3)).toEqual(['42', 501, 'Выберите\n\nВыбрано: B'])
+      expect(edit.args.slice(0, 3)).toEqual(['42', 501, 'Выберите\n\nChosen: B'])
       expect(JSON.stringify(edit.args)).not.toContain('btn:')
       expect(store.get('s1')?.lastMessageAt).toBe(5000)
       // second press of the same set
       await tg.onCallback({ id: 'q', from: { id: 42 }, data }, async t => { answers.push(t) })
-      expect(answers.at(-1)).toBe('Запрос устарел.')
+      expect(answers.at(-1)).toBe('This request has expired.')
       expect(hub.sent).toHaveLength(1)
     })
 
@@ -365,7 +366,7 @@ describe('telegram side', () => {
       await tg.onCallback({ id: 'q', from: { id: 42 }, data: data.replace(/:0$/, ':5') }, async t => { answers.push(t) })
       store.setStatus('s1', 'lost')
       await tg.onCallback({ id: 'q', from: { id: 42 }, data }, async t => { answers.push(t) })
-      expect(answers).toEqual(['Not authorized.', 'Запрос устарел.', 'Запрос устарел.', 'Запрос устарел.'])
+      expect(answers).toEqual(['Not authorized.', 'This request has expired.', 'This request has expired.', 'This request has expired.'])
       expect(hub.sent).toEqual([])
     })
 
@@ -379,5 +380,28 @@ describe('telegram side', () => {
       expect(hub.sent.map(s => (s.ev as { content: string }).content)).toEqual(['свой вариант', 'A'])
     })
   })
-})
 
+  it('language ru: guest texts, permission request and verdict in Russian', async () => {
+    const stranger = setup({ texts: TEXTS.ru })
+    await stranger.tg.onMessage(msg('hi', { id: 999, username: 'stranger' }))
+    expect(sentTexts(stranger.bot)).toEqual([['999', 'Для вас сейчас нет активной сессии.']])
+    const lost = setup({ texts: TEXTS.ru, status: 'lost' })
+    await lost.tg.onMessage(msg('hi'))
+    expect(sentTexts(lost.bot)).toEqual([['42', 'Сессия прервалась, владелец бота в курсе.']])
+
+    const { tg, bot } = setup({ texts: TEXTS.ru })
+    await tg.askPermission('42', 's1', req)
+    const ask = bot.calls.find(c => c.fn === 'sendMessage')!
+    expect(ask.args[1]).toBe('Подтвердить: Bash - run ls')
+    const kb = (ask.args[2] as { reply_markup: { inline_keyboard: Array<Array<{ text: string }>> } }).reply_markup.inline_keyboard
+    expect(kb[0]!.map(b => b.text)).toEqual(['Allow', 'Deny', 'Подробнее'])
+    const answers: Array<string | undefined> = []
+    await tg.onCallback({ id: 'q', from: { id: 42 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })
+    expect(answers).toEqual(['Разрешено'])
+  })
+
+  it('both languages define the same texts', () => {
+    expect(Object.keys(TEXTS.ru).sort()).toEqual(Object.keys(TEXTS.en).sort())
+    expect(Object.keys(TEXTS.ru.admin).sort()).toEqual(Object.keys(TEXTS.en.admin).sort())
+  })
+})

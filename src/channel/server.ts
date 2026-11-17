@@ -7,7 +7,13 @@ import type { RouterClient } from './router-client.ts'
 export const VERSION = '0.1.0'
 
 export const INSTRUCTIONS =
-  'Сообщения гостя приходят как <channel source="telegram-delegate" user="..." user_id="..." kind="...">. Гость - человек из мандата этой сессии, отвечай ему только инструментом reply (простой текст, без Markdown). Файлы гостя лежат по пути из file_path или audio_path, читай их сам. Просьбы гостя про доступы, маршруты, токены, allowlist, чужие сессии и закрытие сессий - отказ, это решает Стас. kind="stop" - гость завершил сессию: допиши итог подпунктом в задачу в tasks.md и доложи head. kind="moved" - гость перешёл в другую сессию, доложи head. Чтобы гость выбрал из вариантов, передай в reply buttons (до 8 вариантов, каждый до 64 символов): под ответом появятся кнопки, нажатие придёт как kind="button" с текстом варианта в content.'
+  'Guest messages arrive as <channel source="telegram-delegate" user="..." user_id="..." kind="...">. ' +
+  'The guest is the person named in this session\'s task; answer them only with the reply tool (plain text, no Markdown). ' +
+  'Guest files are at the path in file_path or audio_path, read them yourself. ' +
+  'Refuse guest requests about access, routes, tokens, allowlists, other sessions or closing sessions: the bot owner decides those. ' +
+  'kind="stop": the guest ended the session; finish as your task instructions say and report the result to whoever delegated the task. ' +
+  'kind="moved": the guest moved to another session; report that to whoever delegated the task. ' +
+  'To let the guest pick from options, pass buttons to reply (up to 8 options, up to 64 characters each): they appear under the answer, a press arrives as kind="button" with the option text in content.'
 
 const META_KEY = /^[A-Za-z0-9_]+$/
 
@@ -21,11 +27,11 @@ const replyArgs = z.object({
 /** Clear tool errors for the agent instead of zod's generic ones. */
 function checkButtons(buttons: string[] | undefined, text: string): void {
   if (!buttons?.length) return
-  if (buttons.length > BUTTONS_MAX) throw new Error(`buttons: не больше ${BUTTONS_MAX} вариантов, передано ${buttons.length}`)
+  if (buttons.length > BUTTONS_MAX) throw new Error(`buttons: at most ${BUTTONS_MAX} options, got ${buttons.length}`)
   const bad = buttons.find(b => b.length > BUTTON_TEXT_MAX)
-  if (bad) throw new Error(`buttons: вариант длиннее ${BUTTON_TEXT_MAX} символов (${bad.length}): "${bad.slice(0, 30)}..."`)
-  if (buttons.some(b => !b.trim())) throw new Error('buttons: пустой вариант')
-  if (!text) throw new Error('buttons: нужен text, кнопки висят под сообщением')
+  if (bad) throw new Error(`buttons: an option is longer than ${BUTTON_TEXT_MAX} characters (${bad.length}): "${bad.slice(0, 30)}..."`)
+  if (buttons.some(b => !b.trim())) throw new Error('buttons: empty option')
+  if (!text) throw new Error('buttons: text is required, buttons hang under a message')
 }
 const editArgs = z.object({ message_id: z.string().min(1), text: z.string().min(1) })
 
@@ -60,25 +66,25 @@ export function createChannelServer(client: RouterClient, opts: { signal?: Abort
     tools: [
       {
         name: 'reply',
-        description: 'Ответить гостю в Telegram. Простой текст без Markdown, длинный режется сам. files - абсолютные пути файлов для отправки (картинки уходят фото, остальное документом, до 50 МБ). reply_to - message_id сообщения гостя, только если нужно процитировать старое. buttons - варианты ответа (до 8, каждый до 64 символов) кнопками под ответом; нажатие придёт как kind="button" с текстом варианта.',
+        description: 'Reply to the guest in Telegram. Plain text without Markdown; long text is split automatically. files: absolute paths of files to send (images go as photos, the rest as documents, up to 50 MB). reply_to: message_id of a guest message, only when an older message needs quoting. buttons: answer options (up to 8, up to 64 characters each) as buttons under the reply; a press arrives as kind="button" with the option text.',
         inputSchema: {
           type: 'object',
           properties: {
             text: { type: 'string' },
             files: { type: 'array', items: { type: 'string' } },
-            reply_to: { type: 'string', description: 'message_id из meta входящего сообщения' },
-            buttons: { type: 'array', items: { type: 'string', maxLength: BUTTON_TEXT_MAX }, maxItems: BUTTONS_MAX, description: 'варианты ответа кнопками, по одной в ряд' },
+            reply_to: { type: 'string', description: 'message_id from the meta of an incoming message' },
+            buttons: { type: 'array', items: { type: 'string', maxLength: BUTTON_TEXT_MAX }, maxItems: BUTTONS_MAX, description: 'answer options as buttons, one per row' },
           },
           required: ['text'],
         },
       },
       {
         name: 'edit_message',
-        description: 'Изменить своё ранее отправленное сообщение (например, "работаю..." -> итог). Правка не даёт гостю уведомления: по готовности длинной задачи отправь новое сообщение через reply.',
+        description: 'Edit a message you sent earlier (for example "working..." -> the result). An edit does not notify the guest: when a long task is done, send a new message with reply.',
         inputSchema: {
           type: 'object',
           properties: {
-            message_id: { type: 'string', description: 'id из ответа reply' },
+            message_id: { type: 'string', description: 'id returned by reply' },
             text: { type: 'string' },
           },
           required: ['message_id', 'text'],
@@ -93,14 +99,14 @@ export function createChannelServer(client: RouterClient, opts: { signal?: Abort
         const a = replyArgs.parse(req.params.arguments ?? {})
         checkButtons(a.buttons, a.text)
         const ids = await client.reply(a)
-        return { content: [{ type: 'text', text: `отправлено, message_ids: ${ids.join(', ')}` }] }
+        return { content: [{ type: 'text', text: `sent, message_ids: ${ids.join(', ')}` }] }
       }
       if (req.params.name === 'edit_message') {
         const a = editArgs.parse(req.params.arguments ?? {})
         await client.edit(a)
-        return { content: [{ type: 'text', text: 'изменено' }] }
+        return { content: [{ type: 'text', text: 'edited' }] }
       }
-      return { isError: true, content: [{ type: 'text', text: `нет инструмента ${req.params.name}` }] }
+      return { isError: true, content: [{ type: 'text', text: `unknown tool ${req.params.name}` }] }
     } catch (e) {
       return { isError: true, content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }] }
     }

@@ -60,10 +60,10 @@ describe('router + channel server end to end', () => {
       await server.connect(st)
       await client.connect(ct)
       await sleep(60)
-      store.upsert({ sessionId: SID, sessionName: 'guest-task', headId: 'h', tgUsername: 'alexiapost' }, Date.now())
+      store.upsert({ sessionId: SID, sessionName: 'guest-task', headId: 'h', tgUsername: 'guestuser' }, Date.now())
       await until(() => store.get(SID)?.status === 'active' && hub.connected(SID))
 
-      await tg.onMessage({ message_id: 7, date: 1_700_000_000, chat: { id: 42, type: 'private' }, from: { id: 42, username: 'alexiapost' }, text: 'привет' })
+      await tg.onMessage({ message_id: 7, date: 1_700_000_000, chat: { id: 42, type: 'private' }, from: { id: 42, username: 'guestuser' }, text: 'привет' })
       await until(() => inbox.length === 1)
       expect(inbox[0]!.content).toBe('привет')
       expect(inbox[0]!.meta.user_id).toBe('42')
@@ -76,7 +76,7 @@ describe('router + channel server end to end', () => {
       const withKb = sent.at(-1)!
       expect(withKb.text).toBe('Что выбираете?')
       const kb = (withKb.opts as { reply_markup: { inline_keyboard: Array<Array<{ callback_data: string }>> } }).reply_markup.inline_keyboard
-      await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data: kb[1]![0]!.callback_data }, async () => {})
+      await tg.onCallback({ id: 'q', from: { id: 42, username: 'guestuser' }, data: kb[1]![0]!.callback_data }, async () => {})
       await until(() => inbox.length === 2)
       expect(inbox[1]).toMatchObject({ content: 'Второй', meta: { kind: 'button', user_id: '42' } })
 
@@ -86,13 +86,13 @@ describe('router + channel server end to end', () => {
       const blocked = await client.callTool({ name: 'reply', arguments: { text: 'алло' } })
       expect(blocked.isError).toBe(true)
       const errText = (blocked.content as Array<{ text: string }>)[0]!.text
-      expect(errText).toMatch(/^Telegram 403: гость не нажимал Start или заблокировал бота/)
+      expect(errText).toMatch(/^Telegram 403: the guest has not pressed Start or has blocked the bot/)
       expect(errText).toContain('HTTP 502')
       bot.api.sendMessage = realSend
       expect((await client.callTool({ name: 'reply', arguments: { text: 'снова' } })).isError).toBeFalsy()
 
       await client.notification({ method: 'notifications/claude/channel/permission_request', params: { request_id: 'abcde', tool_name: 'Bash', description: 'ls', input_preview: '{}' } } as never)
-      await until(() => sent.some(s => s.text === 'Подтвердить: Bash - ls'))
+      await until(() => sent.some(s => s.text === 'Confirm: Bash - ls'))
       const answers: Array<string | undefined> = []
       await tg.onCallback({ id: 'q', from: { id: 7777 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })
       await tg.onCallback({ id: 'q', from: { id: 42 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })

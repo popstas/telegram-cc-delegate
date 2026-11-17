@@ -14,16 +14,16 @@ function fail(msg: string): never {
 }
 
 const sessionId = process.env.TD_SESSION_ID ?? ''
-if (!UUID.test(sessionId)) fail('TD_SESSION_ID не задан или не uuid')
+if (!UUID.test(sessionId)) fail('TD_SESSION_ID is not set or is not a uuid')
 const url = process.env.TD_ROUTER_URL || 'http://127.0.0.1:8790'
 const tokenFile = process.env.TD_TOKEN_FILE || join(configDirFrom(), 'api-token')
 let token: string
 try {
   token = readFileSync(tokenFile, 'utf8').trim()
 } catch {
-  fail(`не читается токен роутера ${tokenFile}`)
+  fail(`cannot read the router token ${tokenFile}`)
 }
-if (!token) fail(`пустой токен роутера ${tokenFile}`)
+if (!token) fail(`the router token is empty ${tokenFile}`)
 
 const ac = new AbortController()
 const server = createChannelServer(createRouterClient({ url, token, sessionId }), { signal: ac.signal })

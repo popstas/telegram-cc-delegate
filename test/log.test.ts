@@ -46,7 +46,7 @@ function hubStub(connected: boolean) {
 
 function setup(opts: { status?: 'pending' | 'active' | 'lost' | 'closed'; connected?: boolean; media?: MediaHandler } = {}) {
   const store = new RouteStore(join(mkdtempSync(join(tmpdir(), 'td-log-')), 'routes.json'))
-  store.upsert({ sessionId: 's1', sessionName: 'guest-task', headId: 'h', tgUsername: 'alexiapost' }, 0)
+  store.upsert({ sessionId: 's1', sessionName: 'guest-task', headId: 'h', tgUsername: 'guestuser' }, 0)
   store.setStatus('s1', opts.status ?? 'active')
   const tg = createTelegram({ bot: botStub(), store, hub: hubStub(opts.connected ?? true), media: opts.media ?? { toEvent: async () => undefined }, adminUserId: '1' })
   return { tg, store }
@@ -58,7 +58,7 @@ function msg(o: Partial<IncomingMessage> & { fromId?: number; username?: string;
     message_id: 7,
     date: 1_700_000_000,
     chat: { id, type: o.chatType ?? 'private' },
-    from: { id, ...(o.username !== '' ? { username: o.username ?? 'alexiapost' } : {}) },
+    from: { id, ...(o.username !== '' ? { username: o.username ?? 'guestuser' } : {}) },
     ...(o.text !== undefined || o.caption !== undefined ? {} : { text: SECRET }),
     ...o,
   } as IncomingMessage
@@ -70,14 +70,14 @@ describe('routing log', () => {
   it('guest text routed to session', async () => {
     const { tg } = setup()
     await tg.onMessage(msg())
-    expect(lines).toContain(`in msg from=42 @alexiapost chat=private type=text len=${SECRET.length} -> guest-task (s1)`)
+    expect(lines).toContain(`in msg from=42 @guestuser chat=private type=text len=${SECRET.length} -> guest-task (s1)`)
     noSecret()
   })
 
   it('queued when no subscriber', async () => {
     const { tg } = setup({ connected: false })
     await tg.onMessage(msg())
-    expect(lines).toContain(`in msg from=42 @alexiapost chat=private type=text len=${SECRET.length} queued guest-task (s1)`)
+    expect(lines).toContain(`in msg from=42 @guestuser chat=private type=text len=${SECRET.length} queued guest-task (s1)`)
   })
 
   it('stranger without username, group, pending, lost, stop', async () => {
@@ -95,21 +95,21 @@ describe('routing log', () => {
     const s = setup()
     await s.tg.onMessage(msg({ text: '/stop' }))
     expect(lines.slice(2)).toEqual([
-      `in msg from=42 @alexiapost chat=private type=text len=${SECRET.length} pending guest-task (s1)`,
-      `in msg from=42 @alexiapost chat=private type=text len=${SECRET.length} lost guest-task (s1)`,
-      'in msg from=42 @alexiapost chat=private type=text len=5 stop guest-task (s1)',
+      `in msg from=42 @guestuser chat=private type=text len=${SECRET.length} pending guest-task (s1)`,
+      `in msg from=42 @guestuser chat=private type=text len=${SECRET.length} lost guest-task (s1)`,
+      'in msg from=42 @guestuser chat=private type=text len=5 stop guest-task (s1)',
     ])
     noSecret()
   })
 
   it('voice and document: type logged, transcription and file name are not', async () => {
-    const media: MediaHandler = { toEvent: async () => ({ content: `[голосовое, расшифровка] ${SECRET}`, meta: { audio_path: '/x/секрет.ogg', file_name: 'секрет.pdf' } }) }
+    const media: MediaHandler = { toEvent: async () => ({ content: `[voice message, transcript] ${SECRET}`, meta: { audio_path: '/x/секрет.ogg', file_name: 'секрет.pdf' } }) }
     const { tg } = setup({ media })
     await tg.onMessage(msg({ text: undefined, voice: { file_id: 'v' } }))
     await tg.onMessage(msg({ text: undefined, caption: SECRET, document: { file_id: 'd', file_name: 'секрет.pdf' } }))
     expect(lines).toEqual([
-      'in msg from=42 @alexiapost chat=private type=voice len=0 -> guest-task (s1)',
-      `in msg from=42 @alexiapost chat=private type=document len=${SECRET.length} -> guest-task (s1)`,
+      'in msg from=42 @guestuser chat=private type=voice len=0 -> guest-task (s1)',
+      `in msg from=42 @guestuser chat=private type=document len=${SECRET.length} -> guest-task (s1)`,
     ])
     noSecret()
   })
@@ -122,16 +122,16 @@ describe('routing log', () => {
     await tg.askPermission('42', 's1', { ...req, request_id: 'fghij' })
     const answer = async () => {}
     await tg.onCallback({ id: 'q', from: { id: 999, username: 'evil' }, data: 'perm:allow:fghij' }, answer)
-    await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data: 'perm:more:fghij' }, answer)
-    await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data: 'perm:deny:fghij' }, answer)
+    await tg.onCallback({ id: 'q', from: { id: 42, username: 'guestuser' }, data: 'perm:more:fghij' }, answer)
+    await tg.onCallback({ id: 'q', from: { id: 42, username: 'guestuser' }, data: 'perm:deny:fghij' }, answer)
     await tg.onCallback({ id: 'q', from: { id: 42 }, data: 'perm:allow:zzzzz' }, answer)
     expect(lines).toEqual([
       'out permission s1 abcde ok',
-      'in msg from=42 @alexiapost chat=private type=text len=9 verdict abcde allow guest-task (s1)',
+      'in msg from=42 @guestuser chat=private type=text len=9 verdict abcde allow guest-task (s1)',
       'out permission s1 fghij ok',
       'in cb from=999 @evil perm:allow:fghij not-authorized',
-      'in cb from=42 @alexiapost perm:more:fghij more guest-task (s1)',
-      'in cb from=42 @alexiapost perm:deny:fghij verdict fghij deny guest-task (s1)',
+      'in cb from=42 @guestuser perm:more:fghij more guest-task (s1)',
+      'in cb from=42 @guestuser perm:deny:fghij verdict fghij deny guest-task (s1)',
       'in cb from=42 perm:allow:zzzzz stale',
     ])
     noSecret()
@@ -139,7 +139,7 @@ describe('routing log', () => {
 })
 
 describe('outbound log', () => {
-  const route = { sessionId: 's1', sessionName: 'guest-task', headId: 'h', tgUsername: 'alexiapost', tgUserId: '42' }
+  const route = { sessionId: 's1', sessionName: 'guest-task', headId: 'h', tgUsername: 'guestuser', tgUserId: '42' }
 
   async function api(out: Outbound, lostGraceMs = 1000) {
     const store = new RouteStore(join(mkdtempSync(join(tmpdir(), 'td-log-')), 'routes.json'))
@@ -234,11 +234,11 @@ describe('button log', () => {
     const id = data.split(':')[1]
     lines = []
     await tg.onCallback({ id: 'q', from: { id: 7 }, data }, async () => {})
-    await tg.onCallback({ id: 'q', from: { id: 42, username: 'alexiapost' }, data }, async () => {})
+    await tg.onCallback({ id: 'q', from: { id: 42, username: 'guestuser' }, data }, async () => {})
     await tg.onCallback({ id: 'q', from: { id: 42 }, data }, async () => {})
     expect(lines).toEqual([
       `in cb from=7 ${data} not-authorized`,
-      `in cb from=42 @alexiapost ${data} button ${id} -> guest-task (s1)`,
+      `in cb from=42 @guestuser ${data} button ${id} -> guest-task (s1)`,
       `in cb from=42 ${data} stale`,
     ])
     noSecret()

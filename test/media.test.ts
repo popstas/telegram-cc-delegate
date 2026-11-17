@@ -65,7 +65,7 @@ describe('media', () => {
   it('voice transcribed', async () => {
     const { media, fetchCalls } = setup({ key: 'dg-key', fetchImpl: dgOk('привет') })
     const ev = await media.toEvent({ ...base, voice: { file_id: 'v1', mime_type: 'audio/ogg', file_size: 5000, duration: 2 } }, 's1')
-    expect(ev?.content).toBe('[голосовое, расшифровка] привет')
+    expect(ev?.content).toBe('[voice message, transcript] привет')
     expect(existsSync(ev!.meta.audio_path!)).toBe(true)
     expect(fetchCalls).toHaveLength(1)
     const { url, init } = fetchCalls[0]!
@@ -83,7 +83,7 @@ describe('media', () => {
   it('voice without key', async () => {
     const { media, fetchCalls } = setup()
     const ev = await media.toEvent({ ...base, voice: { file_id: 'v1', file_size: 5000 } }, 's1')
-    expect(ev?.content).toBe('[голосовое, расшифровать не удалось]')
+    expect(ev?.content).toBe('[voice message, transcription failed]')
     expect(ev?.meta.stt_error).toBeTruthy()
     expect(existsSync(ev!.meta.audio_path!)).toBe(true)
     expect(fetchCalls).toHaveLength(0)
@@ -93,7 +93,7 @@ describe('media', () => {
     const fail = (async () => new Response('{"err_msg":"bad"}', { status: 401 })) as unknown as typeof fetch
     const { media } = setup({ key: 'dg-key', fetchImpl: fail })
     const ev = await media.toEvent({ ...base, audio: { file_id: 'a1', file_name: 'rec.mp3', mime_type: 'audio/mpeg', file_size: 5000 } }, 's1')
-    expect(ev?.content).toBe('[голосовое, расшифровать не удалось]')
+    expect(ev?.content).toBe('[voice message, transcription failed]')
     expect(ev?.meta.stt_error).toContain('401')
     expect(existsSync(ev!.meta.audio_path!)).toBe(true)
   })
@@ -101,14 +101,14 @@ describe('media', () => {
   it('video note goes to stt too', async () => {
     const { media } = setup({ key: 'dg-key', fetchImpl: dgOk('кружок') })
     const ev = await media.toEvent({ ...base, video_note: { file_id: 'vn1', file_size: 5000 } }, 's1')
-    expect(ev?.content).toBe('[голосовое, расшифровка] кружок')
+    expect(ev?.content).toBe('[voice message, transcript] кружок')
     expect(ev?.meta.audio_path).toBeTruthy()
   })
 
   it('file over 20mb not downloaded', async () => {
     const { media, downloads } = setup()
     const ev = await media.toEvent({ ...base, document: { file_id: 'huge', file_name: 'big.zip', file_size: 21 * 1024 * 1024 } }, 's1')
-    expect(ev?.content).toBe('[файл больше 20 МБ, попросите прислать ссылкой]')
+    expect(ev?.content).toBe('[file is over 20 MB, ask the guest to send a link]')
     expect(downloads).toEqual([])
     expect(ev?.meta.file_path).toBeUndefined()
   })

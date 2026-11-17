@@ -55,7 +55,7 @@ export function createRouterClient(opts: {
     }
     if (!res.ok) {
       const err = (json as { error?: string }).error
-      throw new Error(err ? `${err} (HTTP ${res.status})` : `роутер ответил HTTP ${res.status}`)
+      throw new Error(err ? `${err} (HTTP ${res.status})` : `router answered HTTP ${res.status}`)
     }
     return json as T
   }

@@ -9,9 +9,9 @@ const DEEPGRAM_URL = 'https://api.deepgram.com/v1/listen'
 const DEFAULT_MODEL = 'nova-3'
 
 export const MT = {
-  tooBig: '[файл больше 20 МБ, попросите прислать ссылкой]',
-  voice: (text: string) => `[голосовое, расшифровка] ${text}`,
-  voiceFailed: '[голосовое, расшифровать не удалось]',
+  tooBig: '[file is over 20 MB, ask the guest to send a link]',
+  voice: (text: string) => `[voice message, transcript] ${text}`,
+  voiceFailed: '[voice message, transcription failed]',
 }
 
 /** Uploader-controlled names go into <channel> meta: strip tag/meta delimiters. */
@@ -52,7 +52,7 @@ export function createMedia(deps: {
 
   async function transcribe(data: Buffer, mime: string): Promise<string> {
     const dg = deps.deepgram
-    if (!dg?.key) throw new Error('DEEPGRAM_API_KEY не задан')
+    if (!dg?.key) throw new Error('DEEPGRAM_API_KEY is not set')
     const q = new URLSearchParams({ model: dg.model || DEFAULT_MODEL, language: dg.language, smart_format: 'true', punctuate: 'true' })
     const res = await doFetch(`${DEEPGRAM_URL}?${q}`, {
       method: 'POST',
@@ -66,7 +66,7 @@ export function createMedia(deps: {
     }
     const json = (await res.json()) as { results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> } }
     const text = json.results?.channels?.[0]?.alternatives?.[0]?.transcript?.trim()
-    if (!text) throw new Error('пустая расшифровка')
+    if (!text) throw new Error('empty transcript')
     return text
   }
 

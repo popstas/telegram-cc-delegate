@@ -4,7 +4,7 @@ import { z } from 'zod'
 import type { KnownStore } from '../known.ts'
 import type { Route, RouteStore } from '../routes.ts'
 import { errInfo, log } from '../log.ts'
-import { A, T } from '../texts.ts'
+import { AGENT, TEXTS, type Texts } from '../texts.ts'
 import { assertSendable } from './files.ts'
 import type { Hub } from './hub.ts'
 import { BUTTON_TEXT_MAX, BUTTONS_MAX, type Outbound } from './types.ts'
@@ -46,7 +46,7 @@ const permissionBody = z.object({
 function telegramError(e: unknown): string {
   const o = e as { error_code?: unknown; description?: unknown }
   const msg = e instanceof Error ? e.message : String(e)
-  if (o?.error_code === 403) return `Telegram 403: гость не нажимал Start или заблокировал бота, не повторяй, доложи head (${typeof o.description === 'string' ? o.description : msg})`
+  if (o?.error_code === 403) return `Telegram 403: the guest has not pressed Start or has blocked the bot, do not retry, report to whoever started this session (${typeof o.description === 'string' ? o.description : msg})`
   return msg
 }
 
@@ -111,8 +111,11 @@ export function createApi(deps: {
   known?: Pick<KnownStore, 'idByUsername' | 'has'>
   /** config.writeFirst: the child writes to the guest first when the bot can. */
   writeFirst?: boolean
+  /** Guest and admin texts, English by default. */
+  texts?: Texts
 }): http.Server {
   const { store, hub, out, token, lostGraceMs } = deps
+  const T = deps.texts ?? TEXTS.en
   const now = deps.now ?? Date.now
   const lostTimers = new Map<string, NodeJS.Timeout>()
 
@@ -138,7 +141,7 @@ export function createApi(deps: {
       if (!r || r.status !== 'active' || hub.connected(sessionId)) return
       store.setStatus(sessionId, 'lost')
       log(`session ${sessionId} lost`)
-      notifyAdmin('lost', sessionId, A.lost(r))
+      notifyAdmin('lost', sessionId, T.admin.lost(r))
       // Guest messages queued for the reconnect will never arrive: say so instead of silence.
       if (hub.dropQueue(sessionId) > 0 && r.tgUserId) {
         out.sendText(r.tgUserId, T.lost).catch(e => log(`out lost-notice ${sessionId} failed ${errInfo(e)}`))
@@ -152,8 +155,8 @@ export function createApi(deps: {
   const handleMoved = (from: Route, to: Route) => {
     clearLost(from.sessionId)
     hub.dropQueue(from.sessionId)
-    hub.send(from.sessionId, { type: 'message', content: T.movedToSession, meta: { kind: 'moved' } })
-    notifyAdmin('moved', `${from.sessionId} -> ${to.sessionId}`, A.moved(from, to))
+    hub.send(from.sessionId, { type: 'message', content: AGENT.movedToSession, meta: { kind: 'moved' } })
+    notifyAdmin('moved', `${from.sessionId} -> ${to.sessionId}`, T.admin.moved(from, to))
   }
   store.onMoved(handleMoved)
 
@@ -174,7 +177,7 @@ export function createApi(deps: {
     const r = store.get(sessionId)
     if (!r) throw new HttpError(404, 'route not found')
     if (r.status === 'closed') throw new HttpError(410, 'route closed')
-    if (!r.tgUserId) throw new HttpError(409, T.notWrittenYet)
+    if (!r.tgUserId) throw new HttpError(409, AGENT.notWrittenYet)
     return r as Route & { tgUserId: string }
   }
 

@@ -19,12 +19,12 @@ describe('KnownStore', () => {
   it('remembers username and id, lowercased, persisted with mode 600', () => {
     const file = join(dir(), 'known.json')
     const k = new KnownStore(file)
-    k.see({ id: '42', username: '@AlexiaPost' }, 1000)
-    expect(k.idByUsername('alexiapost')).toBe('42')
-    expect(k.idByUsername('@ALEXIAPOST')).toBe('42')
+    k.see({ id: '42', username: '@GuestUser' }, 1000)
+    expect(k.idByUsername('guestuser')).toBe('42')
+    expect(k.idByUsername('@GUESTUSER')).toBe('42')
     expect(statSync(file).mode & 0o777).toBe(0o600)
     const again = new KnownStore(file)
-    expect(again.list()).toEqual([{ id: '42', username: 'alexiapost', lastSeenAt: 1000 }])
+    expect(again.list()).toEqual([{ id: '42', username: 'guestuser', lastSeenAt: 1000 }])
     expect(readFileSync(file, 'utf8')).not.toMatch(/text|content/)
   })
 
@@ -52,14 +52,14 @@ describe('KnownStore', () => {
     k.see({ id: '42', username: 'fresh' }, 5000)
     const n = k.seed([
       route({ sessionId: 'a', tgUsername: 'stale', tgUserId: '42', lastMessageAt: 100 }),
-      route({ sessionId: 'b', tgUsername: 'wyrtensi', tgUserId: '77', createdAt: 200 }),
+      route({ sessionId: 'b', tgUsername: 'guest', tgUserId: '77', createdAt: 200 }),
       route({ sessionId: 'c', tgUsername: 'onlyname' }),
       route({ sessionId: 'd', tgUserId: '99' }),
     ])
     expect(n).toBe(1)
     expect(k.idByUsername('fresh')).toBe('42')
     expect(k.idByUsername('stale')).toBeUndefined()
-    expect(k.list().find(p => p.id === '77')).toEqual({ id: '77', username: 'wyrtensi', lastSeenAt: 200 })
+    expect(k.list().find(p => p.id === '77')).toEqual({ id: '77', username: 'guest', lastSeenAt: 200 })
     expect(k.has('99')).toBe(false)
   })
 
@@ -98,10 +98,10 @@ describe('telegram side records senders', () => {
     const known = new KnownStore(join(d, 'known.json'))
     const tg = createTelegram({ bot: fakeBot(), store, hub: { send: () => true, enqueue: () => {} }, media: { toEvent: async () => undefined }, adminUserId: '1', known, now: () => 7000 })
     const base = { message_id: 1, date: 1, text: 'секрет гостя' }
-    await tg.onMessage({ ...base, chat: { id: 42, type: 'private' }, from: { id: 42, username: 'Wyrtensi' } })
+    await tg.onMessage({ ...base, chat: { id: 42, type: 'private' }, from: { id: 42, username: 'Guest' } })
     await tg.onMessage({ ...base, chat: { id: -100, type: 'group' }, from: { id: 55, username: 'groupie' } })
     await tg.onMessage({ ...base, chat: { id: 66, type: 'private' }, from: { id: 66, username: 'somebot', is_bot: true } })
-    expect(known.list()).toEqual([{ id: '42', username: 'wyrtensi', lastSeenAt: 7000 }])
+    expect(known.list()).toEqual([{ id: '42', username: 'guest', lastSeenAt: 7000 }])
     expect(readFileSync(join(d, 'known.json'), 'utf8')).not.toContain('секрет')
   })
 })
@@ -126,7 +126,7 @@ async function api(opts: { writeFirst?: boolean; known?: boolean } = {}) {
   const d = dir()
   const store = new RouteStore(join(d, 'routes.json'))
   const known = new KnownStore(join(d, 'known.json'))
-  known.see({ id: '42', username: 'wyrtensi' }, 1)
+  known.see({ id: '42', username: 'guest' }, 1)
   const server = createApi({ store, hub: new Hub(), out: fakeOut(), token: 't', lostGraceMs: 1000, ...(opts.known !== false && { known }), writeFirst: opts.writeFirst })
   servers.push(server)
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
@@ -143,7 +143,7 @@ const input = { sessionId: 's1', sessionName: 'week', headId: 'h' }
 describe('POST /routes with known people', () => {
   it('username route gets the id from memory, canWriteFirst and writeFirst from config', async () => {
     const { store, call } = await api({ writeFirst: true })
-    const r = await call('POST', '/routes', { ...input, tgUsername: '@Wyrtensi' })
+    const r = await call('POST', '/routes', { ...input, tgUsername: '@Guest' })
     expect(r.status).toBe(201)
     expect(r.json.route.tgUserId).toBe('42')
     expect(r.json).toMatchObject({ canWriteFirst: true, writeFirst: true })
@@ -165,7 +165,7 @@ describe('POST /routes with known people', () => {
 
   it('GET /known answers the same without creating a route', async () => {
     const { store, call } = await api({ writeFirst: true })
-    expect((await call('GET', '/known?tgUsername=WYRTENSI')).json).toEqual({ known: true, tgUserId: '42', canWriteFirst: true, writeFirst: true })
+    expect((await call('GET', '/known?tgUsername=GUEST')).json).toEqual({ known: true, tgUserId: '42', canWriteFirst: true, writeFirst: true })
     expect((await call('GET', '/known?tgUsername=stranger')).json).toEqual({ known: false, canWriteFirst: false, writeFirst: false })
     expect((await call('GET', '/known?tgUserId=777')).json).toEqual({ known: false, tgUserId: '777', canWriteFirst: true, writeFirst: true })
     expect((await call('GET', '/known')).status).toBe(400)
@@ -174,7 +174,7 @@ describe('POST /routes with known people', () => {
 
   it('without a known store the API still works', async () => {
     const { call } = await api({ known: false })
-    const r = await call('POST', '/routes', { ...input, tgUsername: 'wyrtensi' })
+    const r = await call('POST', '/routes', { ...input, tgUsername: 'guest' })
     expect(r.json).toMatchObject({ canWriteFirst: false, writeFirst: false })
   })
 })

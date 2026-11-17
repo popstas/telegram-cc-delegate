@@ -2,10 +2,11 @@
 // telegram-delegate router: owns the bot (long polling), routes guests to sessions, serves the localhost API.
 import { basename, join } from 'node:path'
 import { Bot, GrammyError } from 'grammy'
-import { ensureApiToken, loadConfig } from '../config.ts'
+import { ensureApiToken, loadConfig, type Config } from '../config.ts'
 import { log, setLogSink } from '../log.ts'
 import { KnownStore } from '../known.ts'
 import { RouteStore } from '../routes.ts'
+import { TEXTS } from '../texts.ts'
 import { createApi } from './api.ts'
 import { Hub } from './hub.ts'
 import { checkIdle } from './idle.ts'
@@ -16,16 +17,23 @@ import { createTelegram, type BotLike } from './telegram.ts'
 const IDLE_CHECK_MS = 10 * 60_000
 const DOWNLOAD_TIMEOUT_MS = 60_000
 
-
-const cfg = loadConfig()
+let cfg: Config
+try {
+  cfg = loadConfig()
+} catch (e) {
+  log(e instanceof Error ? e.message : String(e))
+  process.exit(1)
+}
 if (!cfg.botToken) {
-  log('TELEGRAM_BOT_TOKEN не задан в ~/.config/telegram-delegate/.env')
+  log(`TELEGRAM_BOT_TOKEN is not set in ${join(cfg.configDir, '.env')}`)
   process.exit(1)
 }
 const botToken = cfg.botToken
+const texts = TEXTS[cfg.language]
 /** Never let the bot token reach a log line. */
 const scrub = (s: unknown) => String(s).split(botToken).join('***')
 setLogSink(line => { process.stderr.write(`telegram-delegate: ${scrub(line)}\n`) })
+log(`config ok language=${cfg.language} port=${cfg.port}`)
 
 const apiToken = ensureApiToken(cfg.configDir)
 const store = new RouteStore(join(cfg.stateDir, 'routes.json'))
@@ -38,7 +46,7 @@ const bot = new Bot(botToken)
 async function download(fileId: string): Promise<{ data: Buffer; name: string }> {
   try {
     const file = await bot.api.getFile(fileId)
-    if (!file.file_path) throw new Error('Telegram не вернул file_path')
+    if (!file.file_path) throw new Error('Telegram returned no file_path')
     const res = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
     if (!res.ok) throw new Error(`download HTTP ${res.status}`)
     return { data: Buffer.from(await res.arrayBuffer()), name: basename(file.file_path) }
@@ -52,7 +60,7 @@ const media = createMedia({
   inboxDir: id => join(cfg.stateDir, 'inbox', id),
   deepgram: cfg.deepgramKey ? { key: cfg.deepgramKey, language: cfg.deepgram.language, model: cfg.deepgram.model } : undefined,
 })
-const tg = createTelegram({ bot: bot as unknown as BotLike, store, hub, media, adminUserId: cfg.adminUserId, known })
+const tg = createTelegram({ bot: bot as unknown as BotLike, store, hub, media, adminUserId: cfg.adminUserId, known, texts })
 
 // Not awaited: one guest's slow voice must not stall the others; order per sender is kept.
 const serial = createSerial(e => log(`message handler failed: ${scrub(e)}`))
@@ -78,6 +86,7 @@ const server = createApi({
   files: { stateDir: cfg.stateDir, configDir: cfg.configDir },
   known,
   writeFirst: cfg.writeFirst,
+  texts,
 })
 server.listen(cfg.port, '127.0.0.1', () => log(`api on http://127.0.0.1:${cfg.port}`))
 server.on('error', e => {
@@ -86,7 +95,7 @@ server.on('error', e => {
 })
 
 const idleTimer = setInterval(() => {
-  checkIdle(store, tg, Date.now(), cfg.idleHours).catch(e => log(`idle check failed: ${scrub(e)}`))
+  checkIdle(store, tg, Date.now(), cfg.idleHours, texts).catch(e => log(`idle check failed: ${scrub(e)}`))
 }, IDLE_CHECK_MS)
 
 let shuttingDown = false
@@ -121,11 +130,11 @@ for (let attempt = 1; !shuttingDown; attempt++) {
     if (shuttingDown) break
     if (e instanceof Error && e.message === 'Aborted delay') break
     if (e instanceof GrammyError && e.error_code === 401) {
-      log('Telegram отклонил TELEGRAM_BOT_TOKEN (401)')
+      log('Telegram rejected TELEGRAM_BOT_TOKEN (401)')
       process.exit(1)
     }
     const delay = Math.min(1000 * attempt, 15000)
-    const what = e instanceof GrammyError && e.error_code === 409 ? '409 Conflict - бот уже кто-то опрашивает' : scrub(e)
+    const what = e instanceof GrammyError && e.error_code === 409 ? '409 Conflict - someone else is already polling this bot' : scrub(e)
     log(`polling error: ${what}, retry in ${delay / 1000}s`)
     await new Promise(r => setTimeout(r, delay))
   }

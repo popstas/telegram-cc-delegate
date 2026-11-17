@@ -5,7 +5,7 @@ import { InputFile } from 'grammy'
 import type { KnownStore } from '../known.ts'
 import type { RouteStore } from '../routes.ts'
 import { errInfo, log } from '../log.ts'
-import { T } from '../texts.ts'
+import { AGENT, TEXTS, type Texts } from '../texts.ts'
 import { chunk } from './chunk.ts'
 import type { Hub } from './hub.ts'
 import { BUTTON_TEXT_MAX, BUTTONS_MAX, type AnswerButtons, type IncomingMessage, type Outbound, type PermissionRequest, type SessionEvent } from './types.ts'
@@ -42,7 +42,6 @@ const CALLBACK_RE = /^perm:(allow|deny|more):([a-km-z]{5})$/
 const STOP_RE = /^\s*\/stop(@\w+)?\s*$/i
 const BUTTON_RE = /^btn:([a-z0-9]{6}):([0-7])$/
 const ID_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789'
-const LABEL = { allow: 'Разрешено', deny: 'Отклонено' } as const
 
 /** Answer options under a bot message; callback_data carries only the set id and the index. */
 interface Choice {
@@ -81,12 +80,12 @@ const OTHER_TYPES = ['sticker', 'video', 'animation', 'location', 'venue', 'cont
 const who = (id: number | string, username?: string) => `from=${id}${username ? ` @${username}` : ''}`
 const where = (r: { sessionName: string; sessionId: string }) => `${r.sessionName} (${r.sessionId})`
 
-function keyboard(id: string, withMore: boolean) {
+function keyboard(t: Texts, id: string, withMore: boolean) {
   const row = [
     { text: 'Allow', callback_data: `perm:allow:${id}` },
     { text: 'Deny', callback_data: `perm:deny:${id}` },
   ]
-  if (withMore) row.push({ text: 'Подробнее', callback_data: `perm:more:${id}` })
+  if (withMore) row.push({ text: t.more, callback_data: `perm:more:${id}` })
   return { inline_keyboard: [row] }
 }
 
@@ -98,9 +97,13 @@ export function createTelegram(deps: {
   adminUserId: string
   /** Everyone who writes in private is remembered here: the bot can write to them first. */
   known?: Pick<KnownStore, 'see'>
+  /** Guest and admin texts, English by default. */
+  texts?: Texts
   now?: () => number
 }): Telegram {
   const { bot, store, hub, media, adminUserId } = deps
+  const T = deps.texts ?? TEXTS.en
+  const LABEL = { allow: T.allowed, deny: T.denied } as const
   const now = deps.now ?? Date.now
   const pending = new Map<string, Pending>()
   const choices = new Map<string, Choice>()
@@ -118,8 +121,8 @@ export function createTelegram(deps: {
 
   async function sendText(userId: string, text: string, replyTo?: string, buttons?: AnswerButtons): Promise<string[]> {
     if (buttons) {
-      if (buttons.options.length > BUTTONS_MAX) throw new Error(`buttons: не больше ${BUTTONS_MAX} вариантов`)
-      if (buttons.options.some(o => !o.trim() || o.length > BUTTON_TEXT_MAX)) throw new Error(`buttons: вариант должен быть непустым и не длиннее ${BUTTON_TEXT_MAX} символов`)
+      if (buttons.options.length > BUTTONS_MAX) throw new Error(`buttons: at most ${BUTTONS_MAX} options`)
+      if (buttons.options.some(o => !o.trim() || o.length > BUTTON_TEXT_MAX)) throw new Error(`buttons: an option must be non-empty and at most ${BUTTON_TEXT_MAX} characters`)
     }
     const ids: string[] = []
     const parts = chunk(text)
@@ -143,16 +146,16 @@ export function createTelegram(deps: {
 
   async function sendFiles(userId: string, files: string[]): Promise<string[]> {
     for (const f of files) {
-      if (!isAbsolute(f)) throw new Error(`файл ${f}: нужен абсолютный путь`)
+      if (!isAbsolute(f)) throw new Error(`file ${f}: an absolute path is required`)
       let size: number
       try {
         const st = statSync(f)
         if (!st.isFile()) throw new Error('not a file')
         size = st.size
       } catch {
-        throw new Error(`файл ${f} не найден`)
+        throw new Error(`file ${f} not found`)
       }
-      if (size > MAX_SEND_BYTES) throw new Error(`файл ${basename(f)} больше 50 МБ, Telegram такой не примет`)
+      if (size > MAX_SEND_BYTES) throw new Error(`file ${basename(f)} is over 50 MB, Telegram will not accept it`)
     }
     const ids: string[] = []
     for (const f of files) {
@@ -170,11 +173,11 @@ export function createTelegram(deps: {
   }
 
   async function askPermission(userId: string, sessionId: string, req: PermissionRequest): Promise<void> {
-    const text = `Подтвердить: ${req.tool_name.slice(0, 200)} - ${req.description.slice(0, DESCRIPTION_MAX)}`
+    const text = T.confirm(req.tool_name.slice(0, 200), req.description.slice(0, DESCRIPTION_MAX))
     const p: Pending = { sessionId, userId, req, text }
     pending.set(req.request_id, p)
     try {
-      const sent = await bot.api.sendMessage(userId, text, { reply_markup: keyboard(req.request_id, true) })
+      const sent = await bot.api.sendMessage(userId, text, { reply_markup: keyboard(T, req.request_id, true) })
       p.messageId = sent.message_id
       log(`out permission ${sessionId} ${req.request_id} ok`)
     } catch (e) {
@@ -216,7 +219,7 @@ export function createTelegram(deps: {
     if (msg.text && STOP_RE.test(msg.text)) {
       store.setStatus(sessionId, 'closed')
       for (const [id, p] of pending) if (p.sessionId === sessionId) pending.delete(id)
-      deliver(sessionId, { type: 'message', content: T.stopToSession, meta: { kind: 'stop' } })
+      deliver(sessionId, { type: 'message', content: AGENT.stopToSession, meta: { kind: 'stop' } })
       note(`stop ${where(route)}`)
       return void await say(userId, T.stopped)
     }
@@ -244,7 +247,7 @@ export function createTelegram(deps: {
       extra = { content: msg.caption ?? '', meta: { media_error: String(e instanceof Error ? e.message : e) } }
     }
     let content = extra ? extra.content : (msg.text ?? msg.caption ?? '')
-    if (!content && !extra) content = '[сообщение без текста, такой тип не поддерживается]'
+    if (!content && !extra) content = AGENT.unsupported
     const meta: Record<string, string> = {
       ...(extra?.meta ?? {}),
       chat_id: String(msg.chat.id),
@@ -298,7 +301,7 @@ export function createTelegram(deps: {
       const preview = p.req.input_preview.slice(0, PREVIEW_MAX)
       const text = `${p.text}\n\n${preview}`.slice(0, TEXT_MAX)
       if (p.messageId != null) {
-        await bot.api.editMessageText(p.userId, p.messageId, text, { reply_markup: keyboard(request_id, false) }).catch(e => log(`out permission-more ${p.sessionId} failed ${errInfo(e)}`))
+        await bot.api.editMessageText(p.userId, p.messageId, text, { reply_markup: keyboard(T, request_id, false) }).catch(e => log(`out permission-more ${p.sessionId} failed ${errInfo(e)}`))
       }
       return answer()
     }
@@ -347,7 +350,7 @@ export function createTelegram(deps: {
     })
     note(`button ${choiceId} ${sent ? '->' : 'queued'} ${where(route)}`)
     store.touch(c.sessionId, now())
-    bot.api.editMessageText(c.userId, c.messageId, `${c.text}\n\nВыбрано: ${option}`.slice(0, TEXT_MAX)).catch(e => log(`out button-close ${c.sessionId} failed ${errInfo(e)}`))
+    bot.api.editMessageText(c.userId, c.messageId, `${c.text}\n\n${T.chosen(option)}`.slice(0, TEXT_MAX)).catch(e => log(`out button-close ${c.sessionId} failed ${errInfo(e)}`))
     return answer()
   }
 

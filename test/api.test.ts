@@ -93,7 +93,7 @@ async function until(cond: () => boolean, ms = 1000) {
   }
 }
 
-const route = { sessionId: 's1', sessionName: 'guest-task', headId: 'head-1', tgUsername: 'alexiapost' }
+const route = { sessionId: 's1', sessionName: 'guest-task', headId: 'head-1', tgUsername: 'guestuser' }
 
 describe('router api', () => {
   it('rejects without bearer', async () => {
@@ -149,7 +149,7 @@ describe('router api', () => {
     expect(store.get('s1')?.status).toBe('lost')
     const admin = out.calls.filter(c => c.fn === 'notifyAdmin')
     expect(admin).toHaveLength(1)
-    expect(admin[0]!.args[0]).toBe('Сессия завершена')
+    expect(admin[0]!.args[0]).toBe('Session ended')
   })
 
   it('reconnect within grace keeps active', async () => {
@@ -187,7 +187,7 @@ describe('router api', () => {
     await call(url, 'POST', '/routes', route)
     const r = await call(url, 'POST', '/sessions/s1/reply', { text: 'hi' })
     expect(r.status).toBe(409)
-    expect(r.json.error).toBe('гость ещё не писал боту')
+    expect(r.json.error).toBe('the guest has not written to the bot yet')
   })
 
   it('reply sends to tgUserId', async () => {
@@ -224,13 +224,13 @@ describe('router api', () => {
     await call(url, 'POST', '/routes', route)
     const sub = await subscribe(url, 's1')
     await until(() => store.get('s1')?.status === 'active')
-    const r = await call(url, 'POST', '/routes', { ...route, sessionId: 's2', sessionName: 'next-task', tgUsername: '@AlexiaPost' })
+    const r = await call(url, 'POST', '/routes', { ...route, sessionId: 's2', sessionName: 'next-task', tgUsername: '@GuestUser' })
     expect(r.status).toBe(201)
     expect(r.json.moved.sessionId).toBe('s1')
     await until(() => sub.events.length > 0)
-    expect(sub.events[0]).toEqual({ type: 'message', content: 'Гость перешёл в другую сессию и сюда больше не пишет.', meta: { kind: 'moved' } })
+    expect(sub.events[0]).toEqual({ type: 'message', content: 'The guest moved to another session and will not write here anymore.', meta: { kind: 'moved' } })
     const admin = out.calls.filter(c => c.fn === 'notifyAdmin')
-    expect(admin.map(c => c.args[0])).toEqual(['telegram-delegate: маршрут @alexiapost перенесён из guest-task в next-task.'])
+    expect(admin.map(c => c.args[0])).toEqual(['telegram-delegate: route @guestuser moved from guest-task to next-task.'])
   })
 
   it('hub send reaches subscriber and reports missing one', async () => {
@@ -251,10 +251,10 @@ describe('router api', () => {
     await until(() => store.get('s1')?.status === 'active')
     const r = await call(url, 'POST', '/routes', { ...route, sessionId: 's2', sessionName: 'next-task' })
     expect(r.json.moved).toBeUndefined()
-    expect(store.matchSender({ id: '42', username: 'alexiapost' })?.sessionId).toBe('s2')
+    expect(store.matchSender({ id: '42', username: 'guestuser' })?.sessionId).toBe('s2')
     await until(() => sub.events.length > 0)
     expect(sub.events[0]).toMatchObject({ type: 'message', meta: { kind: 'moved' } })
-    expect(out.calls.filter(c => c.fn === 'notifyAdmin').map(c => c.args[0])).toEqual(['telegram-delegate: маршрут @alexiapost перенесён из guest-task в next-task.'])
+    expect(out.calls.filter(c => c.fn === 'notifyAdmin').map(c => c.args[0])).toEqual(['telegram-delegate: route @guestuser moved from guest-task to next-task.'])
   })
 
   it('queued events are flushed on reconnect', async () => {
@@ -270,7 +270,7 @@ describe('router api', () => {
     hub.enqueue('s1', { type: 'message', content: 'в пустоту?', meta: { kind: 'guest' } })
     await sleep(150)
     expect(store.get('s1')?.status).toBe('lost')
-    expect(out.calls.filter(c => c.fn === 'sendText')).toEqual([{ fn: 'sendText', args: ['42', 'Сессия прервалась, Стас в курсе.'] }])
+    expect(out.calls.filter(c => c.fn === 'sendText')).toEqual([{ fn: 'sendText', args: ['42', 'The session was interrupted, the bot owner has been notified.'] }])
     expect(hub.dropQueue('s1')).toBe(0)
   })
 

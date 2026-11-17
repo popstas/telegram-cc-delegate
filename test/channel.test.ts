@@ -173,7 +173,7 @@ describe('channel server', () => {
     expect(JSON.parse(fake.requests.find(r => r.url === `/sessions/${SID}/reply`)!.body)).toEqual({ text: 'выбор', buttons: ['A', 'B'] })
     const nine = await client.callTool({ name: 'reply', arguments: { text: 'выбор', buttons: Array.from({ length: 9 }, (_, i) => `v${i}`) } })
     expect(nine.isError).toBe(true)
-    expect(JSON.stringify(nine.content)).toContain('не больше 8')
+    expect(JSON.stringify(nine.content)).toContain('at most 8')
     const long = await client.callTool({ name: 'reply', arguments: { text: 'выбор', buttons: ['x'.repeat(65)] } })
     expect(long.isError).toBe(true)
     expect(JSON.stringify(long.content)).toContain('64')
@@ -194,11 +194,11 @@ describe('channel server', () => {
   it('reply tool returns router error as isError', async () => {
     const fake = await new FakeRouter().start()
     fake.replyStatus = 409
-    fake.replyBody = { error: 'гость ещё не писал боту' }
+    fake.replyBody = { error: 'the guest has not written to the bot yet' }
     const { client } = await setup(fake)
     const res = await client.callTool({ name: 'reply', arguments: { text: 'ок' } })
     expect(res.isError).toBe(true)
-    expect(JSON.stringify(res.content)).toContain('гость ещё не писал боту')
+    expect(JSON.stringify(res.content)).toContain('the guest has not written to the bot yet')
   })
 
   it('reconnects after router restart', async () => {

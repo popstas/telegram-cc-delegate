@@ -23,6 +23,6 @@ export function assertSendable(file: string, sessionId: string, dirs: { stateDir
   const state = real(dirs.stateDir)
   const ownInbox = real(join(dirs.stateDir, 'inbox', sessionId))
   if (within(p, config) || (within(p, state) && !within(p, ownInbox))) {
-    throw new Error(`файл ${basename(file)} лежит в служебном каталоге роутера, отправлять его нельзя`)
+    throw new Error(`file ${basename(file)} is in the router's internal directory and cannot be sent`)
   }
 }
