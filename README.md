@@ -98,6 +98,17 @@ telegram-cc-delegate status [--all]
 
 The session runs with your permissions in the current directory; the guest only approves the tool calls Claude Code asks about. Start it in a directory and permission mode you are comfortable with.
 
+## Agent skill
+
+`skills/telegram-cc-delegate/SKILL.md` teaches your own Claude Code agent to hand a task over: ask it "hand this task to @login" and it writes the task file, checks it with `--dry-run` and gives you the `start` command and a message for the guest. It never runs `start` itself: the session has to open in your terminal.
+
+```sh
+mkdir -p ~/.claude/skills
+ln -s "$PWD/skills/telegram-cc-delegate" ~/.claude/skills/telegram-cc-delegate   # or copy the folder
+```
+
+If you work in auto permission mode, add `mcp__telegram-delegate__reply` and `mcp__telegram-delegate__edit_message` to `permissions.allow` in `~/.claude/settings.json`: otherwise the safety classifier may block replies to the guest.
+
 ## Configuration
 
 `~/.config/telegram-delegate/config.json`:
