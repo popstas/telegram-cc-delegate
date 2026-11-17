@@ -18,7 +18,7 @@ export interface PermissionRequest {
   input_preview: string
 }
 
-/** Everything the router sends to Telegram. Implemented by createTelegram (task 3). */
+/** Everything the router sends to Telegram. Implemented by createTelegram. */
 export interface Outbound {
   /** buttons: answer options shown under the last chunk; a press comes back to sessionId as kind=button. */
   sendText(userId: string, text: string, replyTo?: string, buttons?: AnswerButtons): Promise<string[]>
