@@ -5,7 +5,7 @@ import type { RouteStore } from '../routes.ts'
 import { T } from '../texts.ts'
 import { chunk } from './chunk.ts'
 import type { Hub } from './hub.ts'
-import type { IncomingMessage, Outbound, PermissionRequest } from './types.ts'
+import type { IncomingMessage, Outbound, PermissionRequest, SessionEvent } from './types.ts'
 
 export interface BotLike {
   api: {
@@ -32,6 +32,8 @@ export type Telegram = Outbound & {
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp'])
 const MAX_SEND_BYTES = 50 * 1024 * 1024
 const PREVIEW_MAX = 3500
+const DESCRIPTION_MAX = 1000
+const TEXT_MAX = 4096
 const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
 const CALLBACK_RE = /^perm:(allow|deny|more):([a-km-z]{5})$/
 const STOP_RE = /^\s*\/stop(@\w+)?\s*$/i
@@ -61,7 +63,7 @@ function keyboard(id: string, withMore: boolean) {
 export function createTelegram(deps: {
   bot: BotLike
   store: RouteStore
-  hub: Pick<Hub, 'send'>
+  hub: Pick<Hub, 'send' | 'enqueue'>
   media: MediaHandler
   adminUserId: string
   now?: () => number
@@ -70,6 +72,11 @@ export function createTelegram(deps: {
   const now = deps.now ?? Date.now
   const pending = new Map<string, Pending>()
   let username = ''
+
+  /** Active route: deliver now, or keep for the reconnecting channel server (router restart, grace window). */
+  const deliver = (sessionId: string, ev: SessionEvent) => {
+    if (!hub.send(sessionId, ev)) hub.enqueue(sessionId, ev)
+  }
 
   const say = (chatId: string, text: string) =>
     bot.api.sendMessage(chatId, text).catch(e => log(`sendMessage to ${chatId} failed: ${e}`))
@@ -114,7 +121,7 @@ export function createTelegram(deps: {
   }
 
   async function askPermission(userId: string, sessionId: string, req: PermissionRequest): Promise<void> {
-    const text = `Подтвердить: ${req.tool_name} - ${req.description}`
+    const text = `Подтвердить: ${req.tool_name.slice(0, 200)} - ${req.description.slice(0, DESCRIPTION_MAX)}`
     const p: Pending = { sessionId, userId, req, text }
     pending.set(req.request_id, p)
     const sent = await bot.api.sendMessage(userId, text, { reply_markup: keyboard(req.request_id, true) })
@@ -139,7 +146,7 @@ export function createTelegram(deps: {
     if (msg.text && STOP_RE.test(msg.text)) {
       store.setStatus(sessionId, 'closed')
       for (const [id, p] of pending) if (p.sessionId === sessionId) pending.delete(id)
-      hub.send(sessionId, { type: 'message', content: T.stopToSession, meta: { kind: 'stop' } })
+      deliver(sessionId, { type: 'message', content: T.stopToSession, meta: { kind: 'stop' } })
       return void await say(userId, T.stopped)
     }
 
@@ -149,13 +156,14 @@ export function createTelegram(deps: {
       const p = pending.get(request_id)
       if (p && p.sessionId === sessionId && p.userId === userId) {
         const behavior = perm[1]!.toLowerCase().startsWith('y') ? 'allow' : 'deny'
-        if (!hub.send(sessionId, { type: 'permission', request_id, behavior })) return void await say(userId, T.lost)
+        deliver(sessionId, { type: 'permission', request_id, behavior })
         pending.delete(request_id)
         closeRequestMessage(p, LABEL[behavior])
         return
       }
     }
 
+    bot.api.sendChatAction(userId, 'typing').catch(() => {})
     let extra: { content: string; meta: Record<string, string> } | undefined
     try {
       extra = await media.toEvent(msg, sessionId)
@@ -174,9 +182,11 @@ export function createTelegram(deps: {
       ts: new Date(msg.date * 1000).toISOString(),
       kind: 'guest',
     }
-    if (!hub.send(sessionId, { type: 'message', content, meta })) return void await say(userId, T.lost)
+    // The route may have been closed or moved while media was downloading.
+    const current = store.get(sessionId)
+    if (!current || current.status !== 'active') return void await say(userId, current?.status === 'lost' ? T.lost : T.noSession)
+    deliver(sessionId, { type: 'message', content, meta })
     store.touch(sessionId, now())
-    bot.api.sendChatAction(userId, 'typing').catch(() => {})
   }
 
   async function onCallback(q: { id: string; from: { id: number }; data: string }, answer: (text?: string) => Promise<void>): Promise<void> {
@@ -188,19 +198,20 @@ export function createTelegram(deps: {
     if (!p) return answer(T.stale)
     if (String(q.from.id) !== p.userId) return answer(T.notAuthorized)
     const route = store.get(p.sessionId)
-    if (!route || route.status === 'closed') {
+    // A lost or closed session cannot use the verdict: its request ids died with it.
+    if (!route || route.status !== 'active') {
       pending.delete(request_id)
       return answer(T.stale)
     }
     if (action === 'more') {
       const preview = p.req.input_preview.slice(0, PREVIEW_MAX)
-      const text = `${p.text}\n\n${preview}`
+      const text = `${p.text}\n\n${preview}`.slice(0, TEXT_MAX)
       if (p.messageId != null) {
         await bot.api.editMessageText(p.userId, p.messageId, text, { reply_markup: keyboard(request_id, false) }).catch(e => log(`edit more failed: ${e}`))
       }
       return answer()
     }
-    if (!hub.send(p.sessionId, { type: 'permission', request_id, behavior: action })) return answer(T.lost)
+    deliver(p.sessionId, { type: 'permission', request_id, behavior: action })
     pending.delete(request_id)
     closeRequestMessage(p, LABEL[action])
     return answer(LABEL[action])

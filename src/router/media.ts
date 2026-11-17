@@ -44,8 +44,11 @@ export function createMedia(deps: {
   inboxDir: (sessionId: string) => string
   deepgram?: { key: string; language: string; model?: string }
   fetch?: typeof fetch
+  /** Deepgram request timeout, default 60 s. */
+  timeoutMs?: number
 }): MediaHandler {
   const doFetch = deps.fetch ?? fetch
+  const timeoutMs = deps.timeoutMs ?? 60_000
 
   async function transcribe(data: Buffer, mime: string): Promise<string> {
     const dg = deps.deepgram
@@ -55,6 +58,7 @@ export function createMedia(deps: {
       method: 'POST',
       headers: { authorization: `Token ${dg.key}`, 'content-type': mime },
       body: new Uint8Array(data),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!res.ok) {
       const body = (await res.text().catch(() => '')).slice(0, 300)

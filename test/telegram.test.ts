@@ -26,8 +26,11 @@ function fakeBot(): BotLike & { calls: Call[] } {
 
 function fakeHub(connected = true) {
   const sent: Array<{ sessionId: string; ev: SessionEvent }> = []
+  const queued: Array<{ sessionId: string; ev: SessionEvent }> = []
   return {
     sent,
+    queued,
+    enqueue(sessionId: string, ev: SessionEvent) { queued.push({ sessionId, ev }) },
     connected: (_id: string) => connected,
     send(sessionId: string, ev: SessionEvent) {
       if (!connected) return false
@@ -122,10 +125,60 @@ describe('telegram side', () => {
     expect(ev.meta.kind).toBe('guest')
   })
 
-  it('disconnected session answers lost', async () => {
-    const { tg, bot } = setup({ hubConnected: false })
+  it('active route without subscriber queues the message (router restart / grace)', async () => {
+    const { tg, bot, hub } = setup({ hubConnected: false })
     await tg.onMessage(msg('hi'))
-    expect(sentTexts(bot)).toEqual([['42', 'Сессия прервалась, Стас в курсе.']])
+    expect(sentTexts(bot)).toEqual([])
+    expect(hub.queued).toHaveLength(1)
+    expect(hub.queued[0]!.ev).toMatchObject({ type: 'message', content: 'hi' })
+  })
+
+  it('verdict for disconnected active session is queued', async () => {
+    const { tg, hub } = setup({ hubConnected: false })
+    await tg.askPermission('42', 's1', req)
+    const answers: Array<string | undefined> = []
+    await tg.onCallback({ id: 'q1', from: { id: 42 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })
+    expect(hub.queued.map(q => q.ev)).toEqual([{ type: 'permission', request_id: 'abcde', behavior: 'allow' }])
+  })
+
+  it('button on lost route is stale', async () => {
+    const { tg, hub, store } = setup()
+    await tg.askPermission('42', 's1', req)
+    store.setStatus('s1', 'lost')
+    const answers: Array<string | undefined> = []
+    await tg.onCallback({ id: 'q1', from: { id: 42 }, data: 'perm:allow:abcde' }, async t => { answers.push(t) })
+    expect(answers).toEqual(['Запрос устарел.'])
+    expect(hub.sent).toEqual([])
+    expect(hub.queued).toEqual([])
+  })
+
+  it('route closed while media downloads: nothing reaches the session', async () => {
+    let storeRef: RouteStore | undefined
+    const media: MediaHandler = { toEvent: async () => { storeRef!.setStatus('s1', 'closed'); return { content: 'x', meta: { file_path: '/x' } } } }
+    const { tg, hub, bot, store } = setup({ media })
+    storeRef = store
+    await tg.onMessage({ ...msg(''), text: undefined, document: { file_id: 'd1' } })
+    expect(hub.sent).toEqual([])
+    expect(hub.queued).toEqual([])
+    expect(sentTexts(bot)).toEqual([['42', 'Для вас сейчас нет активной сессии.']])
+  })
+
+  it('typing goes out before media processing', async () => {
+    const order: string[] = []
+    const media: MediaHandler = { toEvent: async () => { order.push('media'); return { content: '', meta: {} } } }
+    const { tg, bot } = setup({ media })
+    const orig = bot.api.sendChatAction
+    bot.api.sendChatAction = async (...a) => { order.push('typing'); return orig(...a) }
+    await tg.onMessage({ ...msg(''), text: undefined, voice: { file_id: 'v' } })
+    expect(order).toEqual(['typing', 'media'])
+  })
+
+  it('long permission description is truncated to fit Telegram', async () => {
+    const { tg, bot } = setup()
+    await tg.askPermission('42', 's1', { ...req, description: 'd'.repeat(10000), input_preview: 'p'.repeat(10000) })
+    expect(String(bot.calls.find(c => c.fn === 'sendMessage')!.args[1]).length).toBeLessThanOrEqual(4096)
+    await tg.onCallback({ id: 'q1', from: { id: 42 }, data: 'perm:more:abcde' }, async () => {})
+    expect(String(bot.calls.find(c => c.fn === 'editMessageText')!.args[2]).length).toBeLessThanOrEqual(4096)
   })
 
   it('stop closes route and notifies session', async () => {

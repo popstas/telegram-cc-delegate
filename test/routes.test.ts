@@ -54,6 +54,46 @@ describe('RouteStore', () => {
     expect(store.matchSender({ id: '43', username: 'alexiapost' })).toBeUndefined()
   })
 
+  it('matchSender: newer username route wins over older pinned id route', () => {
+    const store = new RouteStore(tmpFile())
+    const moves: Array<[string, string]> = []
+    store.onMoved((from, to) => moves.push([from.sessionId, to.sessionId]))
+    store.upsert({ ...base, sessionId: 'A', tgUserId: '42' }, 1000)
+    store.setStatus('A', 'active')
+    store.upsert({ ...base, sessionId: 'B', tgUsername: '@alexiapost' }, 2000)
+    expect(store.get('A')?.status).toBe('active')
+    expect(store.matchSender({ id: '42', username: 'AlexiaPost' })?.sessionId).toBe('B')
+    expect(store.get('A')?.status).toBe('closed')
+    expect(store.get('B')?.tgUserId).toBe('42')
+    expect(moves).toEqual([['A', 'B']])
+    expect(store.matchSender({ id: '42', username: 'alexiapost' })?.sessionId).toBe('B')
+    expect(moves).toHaveLength(1)
+  })
+
+  it('matchSender: renamed guest delegated under the new username', () => {
+    const store = new RouteStore(tmpFile())
+    const moves: Array<[string, string]> = []
+    store.onMoved((from, to) => moves.push([from.sessionId, to.sessionId]))
+    store.upsert({ ...base, sessionId: 'A', tgUsername: 'old' }, 1000)
+    store.setStatus('A', 'active')
+    store.matchSender({ id: '42', username: 'old' })
+    store.upsert({ ...base, sessionId: 'B', tgUsername: 'new' }, 2000)
+    expect(store.matchSender({ id: '42', username: 'new' })?.sessionId).toBe('B')
+    expect(store.get('A')?.status).toBe('closed')
+    expect(moves).toEqual([['A', 'B']])
+  })
+
+  it('matchSender: older unpinned username route loses to newer id route', () => {
+    const store = new RouteStore(tmpFile())
+    const moves: Array<[string, string]> = []
+    store.onMoved((from, to) => moves.push([from.sessionId, to.sessionId]))
+    store.upsert({ ...base, sessionId: 'A', tgUsername: 'alexiapost' }, 1000)
+    store.upsert({ ...base, sessionId: 'B', tgUserId: '42' }, 2000)
+    expect(store.matchSender({ id: '42', username: 'alexiapost' })?.sessionId).toBe('B')
+    expect(store.get('A')?.status).toBe('closed')
+    expect(moves).toEqual([['A', 'B']])
+  })
+
   it('matchSender ignores closed routes', () => {
     const store = new RouteStore(tmpFile())
     store.upsert({ ...base, sessionId: 's1', tgUserId: '42' }, 1000)

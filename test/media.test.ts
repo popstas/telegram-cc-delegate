@@ -77,6 +77,7 @@ describe('media', () => {
     const headers = new Headers(init?.headers)
     expect(headers.get('authorization')).toBe('Token dg-key')
     expect(headers.get('content-type')).toBe('audio/ogg')
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('voice without key', async () => {

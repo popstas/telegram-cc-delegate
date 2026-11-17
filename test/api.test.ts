@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -32,12 +32,12 @@ afterEach(() => {
   for (const s of servers.splice(0)) { s.closeAllConnections(); s.close() }
 })
 
-function setup(opts: { lostGraceMs?: number; prepare?: (s: RouteStore) => void } = {}) {
+function setup(opts: { lostGraceMs?: number; prepare?: (s: RouteStore) => void; files?: { stateDir: string; configDir: string } } = {}) {
   const store = new RouteStore(join(mkdtempSync(join(tmpdir(), 'td-api-')), 'routes.json'))
   opts.prepare?.(store)
   const hub = new Hub()
   const out = fakeOut()
-  const server = createApi({ store, hub, out, token: TOKEN, lostGraceMs: opts.lostGraceMs ?? 1000 })
+  const server = createApi({ store, hub, out, token: TOKEN, lostGraceMs: opts.lostGraceMs ?? 1000, files: opts.files })
   servers.push(server)
   return new Promise<{ store: RouteStore; hub: Hub; out: ReturnType<typeof fakeOut>; url: string }>(resolve => {
     server.listen(0, '127.0.0.1', () => {
@@ -243,5 +243,53 @@ describe('router api', () => {
     expect(hub.send('s2', { type: 'permission', request_id: 'abcde', behavior: 'allow' })).toBe(false)
     await until(() => sub.events.length > 0)
     expect(sub.events[0]).toEqual({ type: 'permission', request_id: 'abcde', behavior: 'allow' })
+  })
+
+  it('move found on first message (username route after id route) notifies old session', async () => {
+    const { url, store, out } = await setup()
+    await call(url, 'POST', '/routes', { ...route, tgUsername: undefined, tgUserId: '42' })
+    const sub = await subscribe(url, 's1')
+    await until(() => store.get('s1')?.status === 'active')
+    const r = await call(url, 'POST', '/routes', { ...route, sessionId: 's2', sessionName: 'next-task' })
+    expect(r.json.moved).toBeUndefined()
+    expect(store.matchSender({ id: '42', username: 'alexiapost' })?.sessionId).toBe('s2')
+    await until(() => sub.events.length > 0)
+    expect(sub.events[0]).toMatchObject({ type: 'message', meta: { kind: 'moved' } })
+    expect(out.calls.filter(c => c.fn === 'notifyAdmin').map(c => c.args[0])).toEqual(['telegram-delegate: маршрут @alexiapost перенесён из guest-task в next-task.'])
+  })
+
+  it('queued events are flushed on reconnect', async () => {
+    const { url, hub } = await setup({ prepare: s => { s.upsert({ ...route, tgUserId: '42' }, 0); s.setStatus('s1', 'active') } })
+    hub.enqueue('s1', { type: 'message', content: 'пока рестарт', meta: { kind: 'guest' } })
+    const sub = await subscribe(url, 's1')
+    await until(() => sub.events.length > 0)
+    expect(sub.events[0]).toMatchObject({ content: 'пока рестарт' })
+  })
+
+  it('lost drops queued events and tells the guest', async () => {
+    const { store, hub, out } = await setup({ lostGraceMs: 50, prepare: s => { s.upsert({ ...route, tgUserId: '42' }, 0); s.setStatus('s1', 'active') } })
+    hub.enqueue('s1', { type: 'message', content: 'в пустоту?', meta: { kind: 'guest' } })
+    await sleep(150)
+    expect(store.get('s1')?.status).toBe('lost')
+    expect(out.calls.filter(c => c.fn === 'sendText')).toEqual([{ fn: 'sendText', args: ['42', 'Сессия прервалась, Стас в курсе.'] }])
+    expect(hub.dropQueue('s1')).toBe(0)
+  })
+
+  it('reply refuses router state and config files, allows own inbox', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'td-guard-'))
+    const stateDir = join(root, 'state')
+    const configDir = join(root, 'config')
+    for (const d of [join(stateDir, 'inbox', 's1'), join(stateDir, 'inbox', 'other'), configDir]) mkdirSync(d, { recursive: true })
+    const own = join(stateDir, 'inbox', 's1', 'a.png')
+    const foreign = join(stateDir, 'inbox', 'other', 'b.png')
+    for (const f of [own, foreign, join(stateDir, 'routes.json'), join(configDir, 'api-token')]) writeFileSync(f, 'x')
+    const { url, out } = await setup({ files: { stateDir, configDir } })
+    await call(url, 'POST', '/routes', { ...route, tgUserId: '42' })
+    for (const f of [foreign, join(stateDir, 'routes.json'), join(configDir, 'api-token'), join(stateDir, 'inbox', 's1', '..', 'other', 'b.png')]) {
+      const r = await call(url, 'POST', '/sessions/s1/reply', { text: '', files: [f] })
+      expect(r.status).toBe(403)
+    }
+    expect(out.calls).toEqual([])
+    expect((await call(url, 'POST', '/sessions/s1/reply', { text: '', files: [own] })).status).toBe(200)
   })
 })

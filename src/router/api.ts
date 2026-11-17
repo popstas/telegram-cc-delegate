@@ -3,6 +3,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
 import type { Route, RouteStore } from '../routes.ts'
 import { A, T } from '../texts.ts'
+import { assertSendable } from './files.ts'
 import type { Hub } from './hub.ts'
 import type { Outbound } from './types.ts'
 
@@ -89,6 +90,8 @@ export function createApi(deps: {
   token: string
   lostGraceMs: number
   now?: () => number
+  /** Router dirs that reply.files must not reach (except the session's own inbox). */
+  files?: { stateDir: string; configDir: string }
 }): http.Server {
   const { store, hub, out, token, lostGraceMs } = deps
   const now = deps.now ?? Date.now
@@ -113,10 +116,23 @@ export function createApi(deps: {
       store.setStatus(sessionId, 'lost')
       log(`session ${sessionId} lost`)
       notifyAdmin(A.lost(r))
+      // Guest messages queued for the reconnect will never arrive: say so instead of silence.
+      if (hub.dropQueue(sessionId) > 0 && r.tgUserId) {
+        out.sendText(r.tgUserId, T.lost).catch(e => log(`sendText lost to guest failed: ${e}`))
+      }
     }, lostGraceMs)
     t.unref()
     lostTimers.set(sessionId, t)
   }
+
+  /** The guest moved to another session: tell the old one and the admin. */
+  const handleMoved = (from: Route, to: Route) => {
+    clearLost(from.sessionId)
+    hub.dropQueue(from.sessionId)
+    hub.send(from.sessionId, { type: 'message', content: T.movedToSession, meta: { kind: 'moved' } })
+    notifyAdmin(A.moved(from, to))
+  }
+  store.onMoved(handleMoved)
 
   hub.onDetach(sessionId => {
     if (store.get(sessionId)?.status === 'active') scheduleLost(sessionId)
@@ -154,11 +170,7 @@ export function createApi(deps: {
     if (method === 'POST' && path === '/routes') {
       const input = parse(routeInput, await readJson(req))
       const { route, moved } = store.upsert(input, now())
-      if (moved) {
-        clearLost(moved.sessionId)
-        hub.send(moved.sessionId, { type: 'message', content: T.movedToSession, meta: { kind: 'moved' } })
-        notifyAdmin(A.moved(moved, route))
-      }
+      if (moved) handleMoved(moved, route)
       return send(res, 201, moved ? { route, moved } : { route })
     }
 
@@ -167,6 +179,7 @@ export function createApi(deps: {
       const id = decodeURIComponent(m[1]!)
       if (!store.get(id)) throw new HttpError(404, 'route not found')
       clearLost(id)
+      hub.dropQueue(id)
       return send(res, 200, { route: store.setStatus(id, 'closed') })
     }
 
@@ -185,6 +198,15 @@ export function createApi(deps: {
       if (action === 'reply' && method === 'POST') {
         const body = parse(replyBody, await readJson(req))
         const r = guestRoute(id)
+        if (deps.files) {
+          for (const f of body.files ?? []) {
+            try {
+              assertSendable(f, id, deps.files)
+            } catch (e) {
+              throw new HttpError(403, e instanceof Error ? e.message : String(e))
+            }
+          }
+        }
         const ids: string[] = []
         if (body.text) ids.push(...await outbound(() => out.sendText(r.tgUserId, body.text, body.reply_to)))
         if (body.files?.length) ids.push(...await outbound(() => out.sendFiles(r.tgUserId, body.files!)))

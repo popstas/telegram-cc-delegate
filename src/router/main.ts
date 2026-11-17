@@ -8,9 +8,11 @@ import { createApi } from './api.ts'
 import { Hub } from './hub.ts'
 import { checkIdle } from './idle.ts'
 import { createMedia } from './media.ts'
+import { createSerial } from './serial.ts'
 import { createTelegram, type BotLike } from './telegram.ts'
 
 const IDLE_CHECK_MS = 10 * 60_000
+const DOWNLOAD_TIMEOUT_MS = 60_000
 
 function log(msg: string): void {
   process.stderr.write(`telegram-delegate: ${msg}\n`)
@@ -34,7 +36,7 @@ async function download(fileId: string): Promise<{ data: Buffer; name: string }>
   try {
     const file = await bot.api.getFile(fileId)
     if (!file.file_path) throw new Error('Telegram не вернул file_path')
-    const res = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`)
+    const res = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
     if (!res.ok) throw new Error(`download HTTP ${res.status}`)
     return { data: Buffer.from(await res.arrayBuffer()), name: basename(file.file_path) }
   } catch (e) {
@@ -49,7 +51,12 @@ const media = createMedia({
 })
 const tg = createTelegram({ bot: bot as unknown as BotLike, store, hub, media, adminUserId: cfg.adminUserId })
 
-bot.on('message', ctx => tg.onMessage(ctx.message))
+// Not awaited: one guest's slow voice must not stall the others; order per sender is kept.
+const serial = createSerial(e => log(`message handler failed: ${scrub(e)}`))
+bot.on('message', ctx => {
+  const m = ctx.message
+  void serial(String(m.from?.id ?? m.chat.id), () => tg.onMessage(m))
+})
 bot.on('callback_query:data', ctx =>
   tg.onCallback(
     { id: ctx.callbackQuery.id, from: ctx.callbackQuery.from, data: ctx.callbackQuery.data },
@@ -59,7 +66,14 @@ bot.on('callback_query:data', ctx =>
 // Without this a throw in a handler stops polling.
 bot.catch(err => log(`handler error (polling continues): ${scrub(err.error)}`))
 
-const server = createApi({ store, hub, out: tg, token: apiToken, lostGraceMs: cfg.lostGraceSec * 1000 })
+const server = createApi({
+  store,
+  hub,
+  out: tg,
+  token: apiToken,
+  lostGraceMs: cfg.lostGraceSec * 1000,
+  files: { stateDir: cfg.stateDir, configDir: cfg.configDir },
+})
 server.listen(cfg.port, '127.0.0.1', () => log(`api on http://127.0.0.1:${cfg.port}`))
 server.on('error', e => {
   log(`api error: ${e}`)

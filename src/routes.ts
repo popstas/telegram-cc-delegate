@@ -45,6 +45,7 @@ function sameGuest(a: Route, b: { tgUsername?: string; tgUserId?: string }): boo
 export class RouteStore {
   private readonly file: string
   private routes = new Map<string, Route>()
+  private moveCbs: Array<(from: Route, to: Route) => void> = []
 
   constructor(file: string) {
     this.file = file
@@ -90,18 +91,34 @@ export class RouteStore {
     return moved ? { route, moved: { ...moved } } : { route }
   }
 
-  /** Route for an incoming sender. A username-only route pins the sender's id on first match. */
+  /** Called when matchSender finds that a newer route of the same person replaces an older one. */
+  onMoved(cb: (from: Route, to: Route) => void): void {
+    this.moveCbs.push(cb)
+  }
+
+  /**
+   * Route for an incoming sender. A username-only route pins the sender's id on first match.
+   * The same person can have an id-pinned route and a newer username-only one (delegated by
+   * @login after delegation by id, or renamed): the newest wins, the older one is closed and
+   * reported through onMoved.
+   */
   matchSender(from: { id: string; username?: string }): Route | undefined {
     const open = [...this.routes.values()].filter(r => r.status !== 'closed').sort((a, b) => b.createdAt - a.createdAt)
     const byId = open.find(r => r.tgUserId === from.id)
-    if (byId) return byId
     const u = normUsername(from.username)
-    if (!u) return undefined
-    const byName = open.find(r => !r.tgUserId && normUsername(r.tgUsername) === u)
-    if (!byName) return undefined
+    const byName = u ? open.find(r => !r.tgUserId && normUsername(r.tgUsername) === u) : undefined
+    if (!byName) return byId
     byName.tgUserId = from.id
+    if (!byId) {
+      this.save()
+      return byName
+    }
+    const [winner, loser] = byName.createdAt > byId.createdAt ? [byName, byId] : [byId, byName]
+    loser.status = 'closed'
+    if (!winner.tgUsername && byName.tgUsername) winner.tgUsername = byName.tgUsername
     this.save()
-    return byName
+    for (const cb of this.moveCbs) cb({ ...loser }, winner)
+    return winner
   }
 
   get(sessionId: string): Route | undefined {
