@@ -1,0 +1,25 @@
+{
+  "name": "telegram-delegate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Telegram router and Claude Code channel server: a guest talks to a delegated Claude Code session",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc",
+    "start": "node src/router/main.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "grammy": "^1.46.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
