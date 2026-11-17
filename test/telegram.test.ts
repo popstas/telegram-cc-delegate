@@ -89,7 +89,7 @@ describe('telegram side', () => {
     expect(sentTexts(p.bot)).toEqual([['42', 'The session is starting, please write again in a minute.']])
     const l = setup({ status: 'lost' })
     await l.tg.onMessage(msg('hi'))
-    expect(sentTexts(l.bot)).toEqual([['42', 'The session was interrupted, the bot owner has been notified.']])
+    expect(sentTexts(l.bot)).toEqual([['42', 'Session ended']])
     expect(p.hub.sent).toEqual([])
     expect(l.hub.sent).toEqual([])
   })
@@ -387,7 +387,7 @@ describe('telegram side', () => {
     expect(sentTexts(stranger.bot)).toEqual([['999', 'Для вас сейчас нет активной сессии.']])
     const lost = setup({ texts: TEXTS.ru, status: 'lost' })
     await lost.tg.onMessage(msg('hi'))
-    expect(sentTexts(lost.bot)).toEqual([['42', 'Сессия прервалась, владелец бота в курсе.']])
+    expect(sentTexts(lost.bot)).toEqual([['42', 'Сессия завершена']])
 
     const { tg, bot } = setup({ texts: TEXTS.ru })
     await tg.askPermission('42', 's1', req)

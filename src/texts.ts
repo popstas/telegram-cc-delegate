@@ -34,7 +34,7 @@ const P = 'telegram-delegate: '
 const en: Texts = {
   noSession: 'There is no active session for you right now.',
   pending: 'The session is starting, please write again in a minute.',
-  lost: 'The session was interrupted, the bot owner has been notified.',
+  lost: 'Session ended',
   stopped: 'Session closed.',
   notAuthorized: 'Not authorized.',
   stale: 'This request has expired.',
@@ -53,7 +53,7 @@ const en: Texts = {
 const ru: Texts = {
   noSession: 'Для вас сейчас нет активной сессии.',
   pending: 'Сессия запускается, напишите через минуту.',
-  lost: 'Сессия прервалась, владелец бота в курсе.',
+  lost: 'Сессия завершена',
   stopped: 'Сессия завершена.',
   notAuthorized: 'Нет доступа.',
   stale: 'Запрос устарел.',

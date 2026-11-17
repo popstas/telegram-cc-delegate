@@ -270,7 +270,7 @@ describe('router api', () => {
     hub.enqueue('s1', { type: 'message', content: 'в пустоту?', meta: { kind: 'guest' } })
     await sleep(150)
     expect(store.get('s1')?.status).toBe('lost')
-    expect(out.calls.filter(c => c.fn === 'sendText')).toEqual([{ fn: 'sendText', args: ['42', 'The session was interrupted, the bot owner has been notified.'] }])
+    expect(out.calls.filter(c => c.fn === 'sendText')).toEqual([{ fn: 'sendText', args: ['42', 'Session ended'] }])
     expect(hub.dropQueue('s1')).toBe(0)
   })
 
