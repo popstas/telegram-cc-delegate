@@ -23,6 +23,7 @@ if [ ! -e "$config_dir/config.json" ]; then
   "port": 8790,
   "idleHours": 24,
   "lostGraceSec": 60,
+  "writeFirst": false,
   "deepgram": { "language": "ru" }
 }
 JSON

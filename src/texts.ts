@@ -15,9 +15,10 @@ export const T = {
 
 const P = 'telegram-delegate: '
 
-/** Admin texts, already prefixed. */
+/** Admin texts, prefixed except lost. */
 export const A = {
-  lost: (r: Route) => `${P}сессия ${r.sessionName} (${r.sessionId}) гостя ${guestLabel(r)} прервалась без stop.`,
+  /** Stas 17.11: short, without name and id (they are in the log line `admin lost <id>`). */
+  lost: (_r: Route) => 'Сессия завершена',
   idle: (r: Route, idleHours: number) => `${P}гость ${guestLabel(r)} молчит ${idleHours} ч, сессия ${r.sessionName} открыта.`,
   moved: (from: Route, to: Route) => `${P}маршрут ${guestLabel(to)} перенесён из ${from.sessionName} в ${to.sessionName}.`,
 }

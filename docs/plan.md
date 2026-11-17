@@ -19,7 +19,7 @@
 - Бот новый. `~/.claude/channels/telegram` и плагин `telegram@claude-plugins-official` не трогать.
 - Роутер слушает только `127.0.0.1`, порт по умолчанию `8790`. Все запросы к API - с `Authorization: Bearer <токен>` из `~/.config/telegram-delegate/api-token` (права 600, роутер генерирует при первом старте, 32 байта hex).
 - Состояние: `~/.local/state/telegram-delegate/routes.json`, входящие файлы `~/.local/state/telegram-delegate/inbox/<sessionId>/`, MCP-конфиги ребёнка `~/.local/state/telegram-delegate/mcp/<sessionId>.json`.
-- Конфиг: `~/.config/telegram-delegate/config.json` - `{ "adminUserId": "241225329", "port": 8790, "idleHours": 24, "lostGraceSec": 60, "deepgram": { "language": "ru" } }`, модель Deepgram - по скиллу `deepgram:api` (prerecorded STT для русского).
+- Конфиг: `~/.config/telegram-delegate/config.json` - `{ "adminUserId": "241225329", "port": 8790, "idleHours": 24, "lostGraceSec": 60, "deepgram": { "language": "ru" }, "writeFirst": false }`, модель Deepgram - по скиллу `deepgram:api` (prerecorded STT для русского).
 - Telegram: отправка без `parse_mode` (простой текст), нарезка по 4096 символов с предпочтением перевода строки. Сообщения не из private chat игнорируются целиком.
 - Тексты на русском - правила вольта: без длинного тире (дефис `-`), без «ёлочек» (обычные `"`).
 - Фиксированные тексты бота:
@@ -29,7 +29,7 @@
   - гость прислал `/stop`: `Сессия завершена.`
   - чужое нажатие кнопки: `Not authorized.`; устаревший запрос: `Запрос устарел.`
 - Тексты админу (личка `adminUserId` от того же бота), префикс `telegram-delegate: `:
-  - обрыв: `сессия <sessionName> (<sessionId>) гостя <гость> прервалась без stop.`
+  - обрыв: `Сессия завершена` (решение Стаса 17.11; имя и id - в журнале).
   - простой: `гость <гость> молчит <idleHours> ч, сессия <sessionName> открыта.`
   - перенос: `маршрут <гость> перенесён из <старая sessionName> в <новая sessionName>.`
   - где `<гость>` = `@username`, а без него numeric id.

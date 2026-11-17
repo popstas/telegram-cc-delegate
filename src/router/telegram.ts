@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { basename, extname, isAbsolute } from 'node:path'
 import { InputFile } from 'grammy'
+import type { KnownStore } from '../known.ts'
 import type { RouteStore } from '../routes.ts'
 import { errInfo, log } from '../log.ts'
 import { T } from '../texts.ts'
@@ -95,6 +96,8 @@ export function createTelegram(deps: {
   hub: Pick<Hub, 'send' | 'enqueue'>
   media: MediaHandler
   adminUserId: string
+  /** Everyone who writes in private is remembered here: the bot can write to them first. */
+  known?: Pick<KnownStore, 'see'>
   now?: () => number
 }): Telegram {
   const { bot, store, hub, media, adminUserId } = deps
@@ -194,6 +197,7 @@ export function createTelegram(deps: {
     if (msg.chat.type !== 'private') return note('ignored-group')
     if (msg.from.is_bot) return note('ignored-bot')
     const userId = String(msg.from.id)
+    deps.known?.see({ id: userId, username: msg.from.username }, now())
     const route = store.matchSender({ id: userId, username: msg.from.username })
     if (!route || route.status === 'closed') {
       note('no-session')

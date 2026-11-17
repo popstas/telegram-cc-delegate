@@ -9,6 +9,8 @@ export interface Config {
   idleHours: number
   lostGraceSec: number
   deepgram: { language: string; model?: string }
+  /** The child writes to the guest first when the bot knows the guest's id. Off by default. */
+  writeFirst: boolean
   botToken?: string
   deepgramKey?: string
   stateDir: string
@@ -21,6 +23,7 @@ const DEFAULTS = {
   idleHours: 24,
   lostGraceSec: 60,
   deepgram: { language: 'ru' },
+  writeFirst: false,
 }
 
 export function configDirFrom(env: NodeJS.ProcessEnv = process.env): string {
@@ -63,6 +66,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     idleHours: Number(file.idleHours ?? DEFAULTS.idleHours),
     lostGraceSec: Number(file.lostGraceSec ?? DEFAULTS.lostGraceSec),
     deepgram: { ...DEFAULTS.deepgram, ...(file.deepgram ?? {}) },
+    writeFirst: file.writeFirst === true,
     botToken: pick('TELEGRAM_BOT_TOKEN'),
     deepgramKey: pick('DEEPGRAM_API_KEY'),
     stateDir,

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import { z } from 'zod'
+import type { KnownStore } from '../known.ts'
 import type { Route, RouteStore } from '../routes.ts'
 import { errInfo, log } from '../log.ts'
 import { A, T } from '../texts.ts'
@@ -14,6 +15,11 @@ const routeInput = z.object({
   sessionId: z.string().min(1).max(200),
   sessionName: z.string().min(1).max(200),
   headId: z.string().max(200),
+  tgUsername: z.string().max(64).optional(),
+  tgUserId: z.string().regex(/^\d+$/).optional(),
+}).refine(r => r.tgUsername || r.tgUserId, { message: 'tgUsername or tgUserId required' })
+
+const knownQuery = z.object({
   tgUsername: z.string().max(64).optional(),
   tgUserId: z.string().regex(/^\d+$/).optional(),
 }).refine(r => r.tgUsername || r.tgUserId, { message: 'tgUsername or tgUserId required' })
@@ -35,6 +41,14 @@ const permissionBody = z.object({
   description: z.string(),
   input_preview: z.string(),
 })
+
+/** Telegram failure as the child sees it: 403 explained, the rest as Telegram said it. */
+function telegramError(e: unknown): string {
+  const o = e as { error_code?: unknown; description?: unknown }
+  const msg = e instanceof Error ? e.message : String(e)
+  if (o?.error_code === 403) return `Telegram 403: гость не нажимал Start или заблокировал бота, не повторяй, доложи head (${typeof o.description === 'string' ? o.description : msg})`
+  return msg
+}
 
 class HttpError extends Error {
   status: number
@@ -93,6 +107,10 @@ export function createApi(deps: {
   now?: () => number
   /** Router dirs that reply.files must not reach (except the session's own inbox). */
   files?: { stateDir: string; configDir: string }
+  /** People who wrote to the bot: a username-only route gets the id from here. */
+  known?: Pick<KnownStore, 'idByUsername' | 'has'>
+  /** config.writeFirst: the child writes to the guest first when the bot can. */
+  writeFirst?: boolean
 }): http.Server {
   const { store, hub, out, token, lostGraceMs } = deps
   const now = deps.now ?? Date.now
@@ -148,6 +166,9 @@ export function createApi(deps: {
     if (r.status === 'active' && !hub.connected(r.sessionId)) scheduleLost(r.sessionId)
   }
 
+  /** The bot can write first only to a known numeric id; config decides whether it should. */
+  const writeFirstOf = (tgUserId: string | undefined) => ({ canWriteFirst: !!tgUserId, writeFirst: !!deps.writeFirst && !!tgUserId })
+
   /** Route usable for sending to the guest. */
   const guestRoute = (sessionId: string): Route & { tgUserId: string } => {
     const r = store.get(sessionId)
@@ -163,7 +184,7 @@ export function createApi(deps: {
       return await fn()
     } catch (e) {
       if (label) log(`out ${label} failed ${errInfo(e)}`)
-      throw new HttpError(502, e instanceof Error ? e.message : String(e))
+      throw new HttpError(502, telegramError(e))
     }
   }
 
@@ -175,11 +196,23 @@ export function createApi(deps: {
 
     if (method === 'GET' && path === '/health') return send(res, 200, { ok: true, botUsername: out.botUsername() })
     if (method === 'GET' && path === '/routes') return send(res, 200, { routes: store.list() })
+    if (method === 'GET' && path === '/known') {
+      const q = parse(knownQuery, Object.fromEntries(url.searchParams))
+      const known = q.tgUserId ? !!deps.known?.has(q.tgUserId) : !!deps.known?.idByUsername(q.tgUsername)
+      const tgUserId = q.tgUserId ?? deps.known?.idByUsername(q.tgUsername)
+      return send(res, 200, { known, ...(tgUserId && { tgUserId }), ...writeFirstOf(tgUserId) })
+    }
     if (method === 'POST' && path === '/routes') {
       const input = parse(routeInput, await readJson(req))
+      if (!input.tgUserId && input.tgUsername) {
+        const id = deps.known?.idByUsername(input.tgUsername)
+        if (id) input.tgUserId = id
+      }
       const { route, moved } = store.upsert(input, now())
       if (moved) handleMoved(moved, route)
-      return send(res, 201, moved ? { route, moved } : { route })
+      const wf = writeFirstOf(route.tgUserId)
+      log(`route ${route.sessionId} ${route.tgUserId ? 'with-id' : 'username-only'} canWriteFirst=${wf.canWriteFirst} writeFirst=${wf.writeFirst}`)
+      return send(res, 201, { route, ...(moved && { moved }), ...wf })
     }
 
     let m = /^\/routes\/([^/]+)$/.exec(path)

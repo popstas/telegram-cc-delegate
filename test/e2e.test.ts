@@ -80,6 +80,17 @@ describe('router + channel server end to end', () => {
       await until(() => inbox.length === 2)
       expect(inbox[1]).toMatchObject({ content: 'Второй', meta: { kind: 'button', user_id: '42' } })
 
+      // Telegram 403 (guest never pressed Start or blocked the bot): a clear tool error, the server keeps working.
+      const realSend = bot.api.sendMessage
+      bot.api.sendMessage = async () => { throw Object.assign(new Error("Call to 'sendMessage' failed! (403: Forbidden: bot was blocked by the user)"), { error_code: 403, description: 'Forbidden: bot was blocked by the user' }) }
+      const blocked = await client.callTool({ name: 'reply', arguments: { text: 'алло' } })
+      expect(blocked.isError).toBe(true)
+      const errText = (blocked.content as Array<{ text: string }>)[0]!.text
+      expect(errText).toMatch(/^Telegram 403: гость не нажимал Start или заблокировал бота/)
+      expect(errText).toContain('HTTP 502')
+      bot.api.sendMessage = realSend
+      expect((await client.callTool({ name: 'reply', arguments: { text: 'снова' } })).isError).toBeFalsy()
+
       await client.notification({ method: 'notifications/claude/channel/permission_request', params: { request_id: 'abcde', tool_name: 'Bash', description: 'ls', input_preview: '{}' } } as never)
       await until(() => sent.some(s => s.text === 'Подтвердить: Bash - ls'))
       const answers: Array<string | undefined> = []

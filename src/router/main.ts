@@ -4,6 +4,7 @@ import { basename, join } from 'node:path'
 import { Bot, GrammyError } from 'grammy'
 import { ensureApiToken, loadConfig } from '../config.ts'
 import { log, setLogSink } from '../log.ts'
+import { KnownStore } from '../known.ts'
 import { RouteStore } from '../routes.ts'
 import { createApi } from './api.ts'
 import { Hub } from './hub.ts'
@@ -28,6 +29,9 @@ setLogSink(line => { process.stderr.write(`telegram-delegate: ${scrub(line)}\n`)
 
 const apiToken = ensureApiToken(cfg.configDir)
 const store = new RouteStore(join(cfg.stateDir, 'routes.json'))
+const known = new KnownStore(join(cfg.stateDir, 'known.json'))
+const seeded = known.seed(store.list())
+log(`known people: ${known.list().length} (seeded from routes: ${seeded})`)
 const hub = new Hub()
 const bot = new Bot(botToken)
 
@@ -48,7 +52,7 @@ const media = createMedia({
   inboxDir: id => join(cfg.stateDir, 'inbox', id),
   deepgram: cfg.deepgramKey ? { key: cfg.deepgramKey, language: cfg.deepgram.language, model: cfg.deepgram.model } : undefined,
 })
-const tg = createTelegram({ bot: bot as unknown as BotLike, store, hub, media, adminUserId: cfg.adminUserId })
+const tg = createTelegram({ bot: bot as unknown as BotLike, store, hub, media, adminUserId: cfg.adminUserId, known })
 
 // Not awaited: one guest's slow voice must not stall the others; order per sender is kept.
 const serial = createSerial(e => log(`message handler failed: ${scrub(e)}`))
@@ -72,6 +76,8 @@ const server = createApi({
   token: apiToken,
   lostGraceMs: cfg.lostGraceSec * 1000,
   files: { stateDir: cfg.stateDir, configDir: cfg.configDir },
+  known,
+  writeFirst: cfg.writeFirst,
 })
 server.listen(cfg.port, '127.0.0.1', () => log(`api on http://127.0.0.1:${cfg.port}`))
 server.on('error', e => {

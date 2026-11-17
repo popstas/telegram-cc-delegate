@@ -149,8 +149,7 @@ describe('router api', () => {
     expect(store.get('s1')?.status).toBe('lost')
     const admin = out.calls.filter(c => c.fn === 'notifyAdmin')
     expect(admin).toHaveLength(1)
-    expect(String(admin[0]!.args[0])).toContain('прервалась без stop')
-    expect(String(admin[0]!.args[0])).toBe('telegram-delegate: сессия guest-task (s1) гостя @alexiapost прервалась без stop.')
+    expect(admin[0]!.args[0]).toBe('Сессия завершена')
   })
 
   it('reconnect within grace keeps active', async () => {

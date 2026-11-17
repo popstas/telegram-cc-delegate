@@ -35,9 +35,10 @@ journalctl --user -u telegram-delegate -n 20   # "polling as @<бот>"
 | Путь | Кто пишет | Что |
 |---|---|---|
 | `~/.config/telegram-delegate/.env` | только Стас | `TELEGRAM_BOT_TOKEN`, `DEEPGRAM_API_KEY` |
-| `~/.config/telegram-delegate/config.json` | install.sh (шаблон), Стас | `adminUserId`, `port` (8790), `idleHours` (24), `lostGraceSec` (60), `deepgram.language` (ru), `deepgram.model` (по умолчанию nova-3) |
+| `~/.config/telegram-delegate/config.json` | install.sh (шаблон), Стас | `adminUserId`, `port` (8790), `idleHours` (24), `lostGraceSec` (60), `deepgram.language` (ru), `deepgram.model` (по умолчанию nova-3), `writeFirst` (false: ребёнок пишет гостю первым, если бот знает его id) |
 | `~/.config/telegram-delegate/api-token` | роутер при первом старте (600) | Bearer-токен локального API |
 | `~/.local/state/telegram-delegate/routes.json` | роутер | маршруты "гость -> sessionId" |
+| `~/.local/state/telegram-delegate/known.json` | роутер | кто писал боту в личку: username, numeric id, время последнего сообщения (без текстов); при старте дополняется из маршрутов |
 | `~/.local/state/telegram-delegate/inbox/<sessionId>/` | роутер | файлы и голосовые гостя |
 | `~/.local/state/telegram-delegate/mcp/<sessionId>.json` | скилл telegram-delegate | MCP-конфиг сессии-ребёнка |
 
@@ -51,14 +52,15 @@ journalctl --user -u telegram-delegate -n 20   # "polling as @<бот>"
 |---|---|
 | `GET /health` | `{ ok, botUsername }` |
 | `GET /routes` | `{ routes }` |
-| `POST /routes` | `{ sessionId, sessionName, headId, tgUsername?, tgUserId? }` -> 201 `{ route, moved? }` |
+| `POST /routes` | `{ sessionId, sessionName, headId, tgUsername?, tgUserId? }` -> 201 `{ route, moved?, canWriteFirst, writeFirst }`; маршрут по username без id получает id из known.json; `canWriteFirst` - id известен, `writeFirst` = `config.writeFirst && canWriteFirst` |
+| `GET /known?tgUsername=` или `?tgUserId=` | `{ known, tgUserId?, canWriteFirst, writeFirst }` без создания маршрута (для `--dry-run`) |
 | `DELETE /routes/:sessionId` | маршрут -> `closed` |
 | `GET /sessions/:id/events` | SSE для канал-сервера; подключение делает маршрут `active` |
 | `POST /sessions/:id/reply` | `{ text, files?, reply_to?, buttons? }` -> `{ message_ids }`; 409 пока гость не писал боту; buttons до 8 x 64 символа, нужен text |
 | `POST /sessions/:id/edit` | `{ message_id, text }` |
 | `POST /sessions/:id/permission` | `{ request_id, tool_name, description, input_preview }` -> кнопки гостю |
 
-Обрыв подписки active-маршрута дольше `lostGraceSec` -> `lost` и сообщение админу.
+Обрыв подписки active-маршрута дольше `lostGraceSec` -> `lost` и сообщение админу "Сессия завершена" (имя и id - в журнале, строка `admin lost <sessionId>`). Ошибка Telegram 403 в reply (гость не нажимал Start или заблокировал бота) приходит агенту текстом `Telegram 403: ...`.
 
 ## Канал-сервер
 
