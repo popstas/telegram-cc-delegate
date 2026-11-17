@@ -21,7 +21,13 @@ const fs = require('node:fs')
 const argv = process.argv.slice(2)
 const mcp = argv[argv.indexOf('--mcp-config') + 1]
 fs.writeFileSync(process.env.FAKE_OUT, JSON.stringify({ argv, mcp: fs.readFileSync(mcp, 'utf8') }))
-if (process.env.FAKE_MODE === 'wait') {
+if (process.env.FAKE_MODE === 'connect') {
+  // Like the channel server: subscribe, so the route is active and a drop would arm the lost timer.
+  const e = JSON.parse(fs.readFileSync(mcp, 'utf8')).mcpServers['telegram-delegate'].env
+  const ac = new AbortController()
+  fetch(e.TD_ROUTER_URL + '/sessions/' + e.TD_SESSION_ID + '/events', { headers: { authorization: 'Bearer ' + fs.readFileSync(e.TD_TOKEN_FILE, 'utf8').trim() }, signal: ac.signal })
+    .then(r => { fs.writeFileSync(process.env.FAKE_OUT + '.sse', String(r.status)); setTimeout(() => { ac.abort(); process.exit(0) }, 100) })
+} else if (process.env.FAKE_MODE === 'wait') {
   process.on('SIGINT', () => process.exit(130))
   process.on('SIGTERM', () => process.exit(143))
   setInterval(() => {}, 1000)
@@ -35,7 +41,7 @@ let prevSink: LogSink
 beforeAll(() => { prevSink = setLogSink(() => {}) })
 afterAll(() => { setLogSink(prevSink) })
 
-async function setup(opts: { writeFirst?: boolean } = {}) {
+async function setup(opts: { writeFirst?: boolean; lostGraceMs?: number } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'td-cli-'))
   const bin = join(root, 'bin')
   mkdirSync(bin)
@@ -51,7 +57,7 @@ async function setup(opts: { writeFirst?: boolean } = {}) {
     sendText: async () => [], sendFiles: async () => [], editText: async () => {}, askPermission: async () => {},
   } as unknown as Outbound
   const known = { has: (id: string) => id === '42', idByUsername: (u?: string) => (u === 'knownguest' ? '42' : undefined) }
-  const server = createApi({ store, hub: new Hub(), out, token: 'tok', lostGraceMs: 50, known, writeFirst: opts.writeFirst })
+  const server = createApi({ store, hub: new Hub(), out, token: 'tok', lostGraceMs: opts.lostGraceMs ?? 50, known, writeFirst: opts.writeFirst })
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   cleanups.push(() => server.close())
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -217,6 +223,31 @@ describe('telegram-delegate start', () => {
     expect((await t.run(['start', '--user', '@guest_x', '--bogus'])).code).toBe(2)
     expect((await t.run(['start', '--user', '@guest_x', '--task-file', join(t.root, 'nope.md')])).stderr).toContain('cannot read --task-file')
     expect(t.store.list()).toEqual([])
+  })
+})
+
+describe('telegram-delegate start: no lost notice', () => {
+  it('an active session that ends with claude is closed, not lost', async () => {
+    const t = await setup({ lostGraceMs: 300 })
+    const r = await t.run(['start', '--user', '@liveguest'], { env: { FAKE_MODE: 'connect' } })
+    expect(r.code).toBe(0)
+    expect(readFileSync(t.fakeOut + '.sse', 'utf8')).toBe('200')
+    const sid = t.claudeCall().argv[1]!
+    await new Promise(res => setTimeout(res, 600))
+    expect(t.store.get(sid)?.status).toBe('closed')
+    expect(t.admin).toEqual([])
+  })
+
+  it('control: the same drop without the command becomes lost with a notice', async () => {
+    const t = await setup({ lostGraceMs: 300 })
+    t.store.upsert({ sessionId: 'raw', sessionName: 'raw-task', headId: '', tgUsername: 'liveguest' }, 0)
+    const ac = new AbortController()
+    const res = await fetch(`${t.url}/sessions/raw/events`, { headers: { authorization: 'Bearer tok' }, signal: ac.signal })
+    expect(res.status).toBe(200)
+    ac.abort()
+    await new Promise(r => setTimeout(r, 600))
+    expect(t.store.get('raw')?.status).toBe('lost')
+    expect(t.admin).toEqual(['Session ended'])
   })
 })
 
